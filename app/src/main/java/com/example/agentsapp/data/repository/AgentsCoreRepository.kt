@@ -1,0 +1,77 @@
+package com.example.agentsapp.data.repository
+
+import com.example.agentsapp.data.remote.Agent
+import com.example.agentsapp.data.remote.AgentWithChats
+import com.example.agentsapp.data.remote.AgentStreamEvent
+import com.example.agentsapp.data.remote.AgentsCoreApiClient
+import com.example.agentsapp.data.remote.Branch
+import com.example.agentsapp.data.remote.Chat
+import com.example.agentsapp.data.remote.DefaultSettings
+import com.example.agentsapp.data.remote.HealthResponse
+import com.example.agentsapp.data.remote.Message
+import com.example.agentsapp.data.remote.ModelHealth
+import com.example.agentsapp.data.remote.ModelInfo
+import com.example.agentsapp.data.remote.SendMessageResponse
+import com.example.agentsapp.data.remote.Settings
+import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.json.JsonElement
+
+/** Единственная точка, через которую экраны обращаются к данным — тонкая
+ * прослойка поверх [AgentsCoreApiClient]. Не содержит собственного
+ * состояния/кэша: каждый вызов уходит на сервер. */
+class AgentsCoreRepository(private val api: AgentsCoreApiClient) {
+
+    suspend fun health(): HealthResponse = api.health()
+    suspend fun listModels(): List<ModelInfo> = api.listModels()
+    suspend fun modelHealth(modelId: String): ModelHealth = api.modelHealth(modelId)
+
+    suspend fun getDefaultSettings(): DefaultSettings = api.getDefaultSettings()
+    suspend fun updateDefaultSettings(patch: Map<String, JsonElement>): DefaultSettings = api.updateDefaultSettings(patch)
+    suspend fun resetDefaultSettings(): DefaultSettings = api.resetDefaultSettings()
+
+    suspend fun listAgentsWithChats(): List<AgentWithChats> = api.listAgentsWithChats()
+    suspend fun createAgent(name: String?, model: String?): Agent = api.createAgent(name, model)
+    suspend fun getAgent(agentId: String): Agent = api.getAgent(agentId)
+    suspend fun renameAgent(agentId: String, name: String): Agent = api.renameAgent(agentId, name)
+    suspend fun deleteAgent(agentId: String) = api.deleteAgent(agentId)
+    suspend fun getAgentSettings(agentId: String): Settings = api.getAgentSettings(agentId)
+    suspend fun updateAgentSettings(agentId: String, patch: Map<String, JsonElement>): Settings = api.updateAgentSettings(agentId, patch)
+    suspend fun createChat(agentId: String, title: String?): Chat = api.createChat(agentId, title)
+
+    suspend fun listChats(agentId: String? = null): List<Chat> = api.listChats(agentId)
+    suspend fun getChat(chatId: String, branch: Int? = null): Chat = api.getChat(chatId, branch)
+    suspend fun renameChat(chatId: String, title: String): Chat = api.renameChat(chatId, title)
+    suspend fun deleteChat(chatId: String) = api.deleteChat(chatId)
+    suspend fun copyChat(chatId: String, title: String): Chat = api.copyChat(chatId, title)
+    suspend fun getChatSettings(chatId: String): Settings = api.getChatSettings(chatId)
+    suspend fun updateChatSettings(chatId: String, patch: Map<String, JsonElement>): Settings = api.updateChatSettings(chatId, patch)
+    suspend fun summarizeChat(chatId: String): Message = api.summarizeChat(chatId)
+
+    suspend fun listBranches(chatId: String): List<Branch> = api.listBranches(chatId)
+    suspend fun createBranch(chatId: String, name: String? = null): Branch = api.createBranch(chatId, name)
+    suspend fun deleteBranch(chatId: String, number: Int) = api.deleteBranch(chatId, number)
+
+    suspend fun listMessages(chatId: String): List<Message> = api.listMessages(chatId)
+    suspend fun clearMessages(chatId: String) = api.clearMessages(chatId)
+    suspend fun deleteMessage(chatId: String, messageId: Long) = api.deleteMessage(chatId, messageId)
+    suspend fun bulkDeleteMessages(chatId: String, ids: List<Long>) = api.bulkDeleteMessages(chatId, ids)
+    suspend fun sendMessage(
+        chatId: String,
+        text: String,
+        getFacts: Boolean = false,
+        slidingWindow: Boolean = false,
+        autosummary: String = "off",
+        branch: Int? = null,
+    ): SendMessageResponse =
+        api.sendMessage(chatId, text, getFacts, slidingWindow, autosummary, branch)
+
+    fun streamMessage(
+        chatId: String,
+        text: String,
+        getFacts: Boolean = false,
+        slidingWindow: Boolean = false,
+        autosummary: String = "off",
+        branch: Int? = null,
+    ): Flow<AgentStreamEvent> =
+        api.streamMessage(chatId, text, getFacts, slidingWindow, autosummary, branch)
+}

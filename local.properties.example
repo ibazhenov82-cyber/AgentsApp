@@ -1,0 +1,13 @@
+# Copy this file to "local.properties" (already gitignored — Android Studio
+# creates one automatically with sdk.dir the first time you open the project)
+# if you need to set the Android SDK path explicitly.
+#
+# There is no DeepSeek API key setting here anymore: the key is now an
+# *agent-level* setting that lives entirely on the Python agent side (see
+# the companion deepseek_agent package's .env.example). This app never sees
+# it — it only talks to the agent's own HTTP API. To point the app at your
+# running agent, use the "Agent connection" (cloud icon) button on the chat
+# list screen at runtime; it defaults to http://10.0.2.2:8000/ (the Android
+# emulator's alias for your host machine).
+
+sdk.dir=/path/to/your/Android/sdk

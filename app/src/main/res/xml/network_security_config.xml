@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Приложение общается только с HTTP API AgentsCore, а его адрес — это
+     настройка пользователя, обычно указывающая на обычный http-адрес в
+     локальной сети (10.0.2.2 для эмулятора либо LAN-адрес), а не на
+     публичный https-эндпоинт. Поэтому разрешён cleartext-трафик; если
+     AgentsCore развёрнут за HTTPS, ничего менять не нужно — TLS будет
+     использован автоматически, когда указанный адрес начинается на https://. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
