@@ -12,14 +12,20 @@ import androidx.navigation.navArgument
 import com.example.agentsapp.AppContainer
 import com.example.agentsapp.ui.ChatViewModelFactory
 import com.example.agentsapp.ui.MainViewModelFactory
+import com.example.agentsapp.ui.MemoryViewModelFactory
 import com.example.agentsapp.ui.ModelsViewModelFactory
+import com.example.agentsapp.ui.ProfilesViewModelFactory
 import com.example.agentsapp.ui.SettingsViewModelFactory
 import com.example.agentsapp.ui.chat.ChatScreen
 import com.example.agentsapp.ui.chat.ChatViewModel
 import com.example.agentsapp.ui.main.MainScreen
 import com.example.agentsapp.ui.main.MainViewModel
+import com.example.agentsapp.ui.memory.MemoryScreen
+import com.example.agentsapp.ui.memory.MemoryViewModel
 import com.example.agentsapp.ui.models.ModelsScreen
 import com.example.agentsapp.ui.models.ModelsViewModel
+import com.example.agentsapp.ui.profiles.ProfilesScreen
+import com.example.agentsapp.ui.profiles.ProfilesViewModel
 import com.example.agentsapp.ui.settings.SettingsMode
 import com.example.agentsapp.ui.settings.SettingsScreen
 import com.example.agentsapp.ui.settings.SettingsViewModel
@@ -27,14 +33,17 @@ import com.example.agentsapp.ui.settings.SettingsViewModel
 private object Routes {
     const val MAIN = "main"
     const val MODELS = "models"
+    const val PROFILES = "profiles"
     const val DEFAULT_SETTINGS = "defaultSettings"
     const val AGENT_SETTINGS = "agentSettings/{agentId}"
     const val CHAT_SETTINGS = "chatSettings/{chatId}"
     const val CHAT = "chat/{chatId}"
+    const val MEMORY = "memory/{chatId}"
 
     fun agentSettings(agentId: String) = "agentSettings/$agentId"
     fun chatSettings(chatId: String) = "chatSettings/$chatId"
     fun chat(chatId: String) = "chat/$chatId"
+    fun memory(chatId: String) = "memory/$chatId"
 }
 
 @Composable
@@ -53,6 +62,7 @@ fun AppNavHost(
                 onOpenChatSettings = { chatId -> navController.navigate(Routes.chatSettings(chatId)) },
                 onOpenModels = { navController.navigate(Routes.MODELS) },
                 onOpenDefaultSettings = { navController.navigate(Routes.DEFAULT_SETTINGS) },
+                onOpenProfiles = { navController.navigate(Routes.PROFILES) },
             )
         }
 
@@ -60,6 +70,12 @@ fun AppNavHost(
             val factory = remember { ModelsViewModelFactory(container.repository) }
             val vm: ModelsViewModel = viewModel(factory = factory)
             ModelsScreen(viewModel = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.PROFILES) {
+            val factory = remember { ProfilesViewModelFactory(container.repository) }
+            val vm: ProfilesViewModel = viewModel(factory = factory)
+            ProfilesScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
 
         composable(Routes.DEFAULT_SETTINGS) {
@@ -99,7 +115,18 @@ fun AppNavHost(
                 viewModel = vm,
                 onBack = { navController.popBackStack() },
                 onOpenChatSettings = { navController.navigate(Routes.chatSettings(chatId)) },
+                onOpenMemory = { navController.navigate(Routes.memory(chatId)) },
             )
+        }
+
+        composable(
+            route = Routes.MEMORY,
+            arguments = listOf(navArgument("chatId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val chatId = backStackEntry.arguments?.getString("chatId").orEmpty()
+            val factory = remember(chatId) { MemoryViewModelFactory(chatId, container.repository) }
+            val vm: MemoryViewModel = viewModel(key = "memory-$chatId", factory = factory)
+            MemoryScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
     }
 }

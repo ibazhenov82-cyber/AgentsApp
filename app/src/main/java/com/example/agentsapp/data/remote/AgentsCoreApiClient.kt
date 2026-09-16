@@ -162,6 +162,81 @@ class AgentsCoreApiClient(
         executeNoContent("chats/$chatId/branches/$number", "DELETE")
     }
 
+    // ---- Рабочая память (чат) -----------------------------------------------
+
+    suspend fun listWorkingMemory(chatId: String): List<WorkingMemoryEntry> =
+        get("chats/$chatId/working-memory", ListSerializer(WorkingMemoryEntry.serializer()))
+
+    suspend fun saveWorkingMemory(chatId: String, key: String, value: String): WorkingMemoryEntry =
+        post("chats/$chatId/working-memory", WorkingMemorySaveRequest(key, value), WorkingMemoryEntry.serializer())
+
+    suspend fun deleteWorkingMemory(chatId: String, key: String) {
+        executeNoContent("chats/$chatId/working-memory/$key", "DELETE")
+    }
+
+    // ---- Долговременная память (агент) ---------------------------------------
+
+    suspend fun listLongTermMemory(agentId: String, category: String? = null): List<LongTermMemoryEntry> {
+        val path = if (category != null) "agents/$agentId/long-term-memory?category=$category" else "agents/$agentId/long-term-memory"
+        return get(path, ListSerializer(LongTermMemoryEntry.serializer()))
+    }
+
+    suspend fun saveLongTermMemory(agentId: String, category: String, key: String, value: String): LongTermMemoryEntry =
+        post(
+            "agents/$agentId/long-term-memory",
+            LongTermMemorySaveRequest(category, key, value),
+            LongTermMemoryEntry.serializer(),
+        )
+
+    suspend fun deleteLongTermMemory(agentId: String, category: String, key: String) {
+        executeNoContent("agents/$agentId/long-term-memory/$category/$key", "DELETE")
+    }
+
+    // ---- Профили-пайплайны (общий справочник, см. Profile в AgentsCoreModels.kt) ---
+
+    suspend fun listProfiles(): List<Profile> =
+        get("profiles", ListSerializer(Profile.serializer()))
+
+    suspend fun listRegisteredSkills(): List<RegisteredSkill> =
+        get("skills", ListSerializer(RegisteredSkill.serializer()))
+
+    suspend fun createProfile(
+        name: String,
+        style: String? = null,
+        format: String? = null,
+        constraints: String? = null,
+        skillsJson: String = "",
+        skillNames: List<String>? = null,
+        orchestrationPrompt: String? = null,
+    ): Profile =
+        post(
+            "profiles",
+            ProfileCreateRequest(name, style, format, constraints, skillsJson, skillNames, orchestrationPrompt),
+            Profile.serializer(),
+        )
+
+    suspend fun getProfile(profileId: String): Profile = get("profiles/$profileId", Profile.serializer())
+
+    suspend fun updateProfile(profileId: String, patch: Map<String, JsonElement>): Profile =
+        putJson("profiles/$profileId", patch, Profile.serializer())
+
+    suspend fun deleteProfile(profileId: String) {
+        executeNoContent("profiles/$profileId", "DELETE")
+    }
+
+    suspend fun setChatActiveProfile(chatId: String, profileId: String?): Chat =
+        put("chats/$chatId/active-profile", ActiveProfileSetRequest(profileId), Chat.serializer())
+
+    /** Профиль по умолчанию для НОВЫХ чатов этого агента (см. комментарий у
+     * `Agent.default_profile_id`) — не влияет на уже существующие чаты. */
+    suspend fun setAgentDefaultProfile(agentId: String, profileId: String?): Agent =
+        put("agents/$agentId/default-profile", ActiveProfileSetRequest(profileId), Agent.serializer())
+
+    // ---- Снимок памяти ---------------------------------------------------------
+
+    suspend fun getMemorySnapshot(chatId: String): MemorySnapshot =
+        get("chats/$chatId/memory-snapshot", MemorySnapshot.serializer())
+
     // ---- Сообщения ------------------------------------------------------
 
     suspend fun listMessages(chatId: String): List<Message> =
@@ -314,6 +389,17 @@ class AgentsCoreApiClient(
         return execute(request, responseSerializer)
     }
 
+    /** PUT с типизированным (не частичным) телом — в отличие от [putJson],
+     * используется там, где сервер ожидает объект целиком, а не карту
+     * "изменённое поле -> значение" (например, `PUT .../active-profile`). */
+    private suspend fun <B : Any, T> put(path: String, body: B, responseSerializer: KSerializer<T>): T {
+        val bodyJson = json.encodeToString(bodySerializerFor(body), body)
+        val request = requestBuilder(path)
+            .put(bodyJson.toRequestBody(JSON_MEDIA_TYPE.toMediaType()))
+            .build()
+        return execute(request, responseSerializer)
+    }
+
     /** PUT с частичным телом настроек: только изменённые поля, ключ ->
      * [JsonElement] (см. [jsonValueOf]) — сервер трактует такое тело как
      * частичное обновление (не переданные поля сохраняют текущее значение). */
@@ -336,6 +422,10 @@ class AgentsCoreApiClient(
         is StreamSendMessageRequest -> StreamSendMessageRequest.serializer()
         is BulkDeleteRequest -> BulkDeleteRequest.serializer()
         is BranchCreateRequest -> BranchCreateRequest.serializer()
+        is WorkingMemorySaveRequest -> WorkingMemorySaveRequest.serializer()
+        is LongTermMemorySaveRequest -> LongTermMemorySaveRequest.serializer()
+        is ProfileCreateRequest -> ProfileCreateRequest.serializer()
+        is ActiveProfileSetRequest -> ActiveProfileSetRequest.serializer()
         else -> error("no serializer registered for ${body::class}")
     } as KSerializer<Any>
 

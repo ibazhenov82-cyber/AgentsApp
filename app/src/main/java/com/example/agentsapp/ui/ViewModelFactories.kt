@@ -6,7 +6,9 @@ import com.example.agentsapp.data.remote.ServerConnectionSettings
 import com.example.agentsapp.data.repository.AgentsCoreRepository
 import com.example.agentsapp.ui.chat.ChatViewModel
 import com.example.agentsapp.ui.main.MainViewModel
+import com.example.agentsapp.ui.memory.MemoryViewModel
 import com.example.agentsapp.ui.models.ModelsViewModel
+import com.example.agentsapp.ui.profiles.ProfilesViewModel
 import com.example.agentsapp.ui.settings.SettingsMode
 import com.example.agentsapp.ui.settings.SettingsViewModel
 
@@ -47,4 +49,21 @@ class ChatViewModelFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
         ChatViewModel(chatId, repository) as T
+}
+
+class MemoryViewModelFactory(
+    private val chatId: String,
+    private val repository: AgentsCoreRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        MemoryViewModel(chatId, repository) as T
+}
+
+class ProfilesViewModelFactory(
+    private val repository: AgentsCoreRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        ProfilesViewModel(repository) as T
 }

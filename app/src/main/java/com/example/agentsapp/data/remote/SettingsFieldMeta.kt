@@ -60,6 +60,7 @@ const val GROUP_CONNECTION = "Соединение с сервером"
 const val GROUP_MODEL = "Модель"
 const val GROUP_RESPONSE = "Параметры ответа"
 const val GROUP_TOOLS = "Инструменты"
+const val GROUP_MEMORY = "Память"
 const val GROUP_SUMMARIZATION = "Суммаризация запросов"
 const val GROUP_CONTEXT_STRATEGY = "Стратегии управления контекстом"
 const val GROUP_EXTRA = "Дополнительно"
@@ -95,6 +96,20 @@ val AGENT_SETTINGS_FIELDS: List<SettingsFieldDef> = listOf(
     SettingsFieldDef("stop_sequences", "Стоп-последовательности (через запятую)", GROUP_RESPONSE, FieldType.STOP_SEQUENCES),
     SettingsFieldDef("tool_choice", "Выбор функции", GROUP_TOOLS, FieldType.ENUM, options = TOOL_CHOICE_OPTIONS),
     SettingsFieldDef("tools_json", "Список функций в формате OpenAI", GROUP_TOOLS, FieldType.TOOLS_JSON),
+    SettingsFieldDef(
+        "memory_tools_enabled", "Разрешить агенту сохранять память", GROUP_MEMORY, FieldType.BOOLEAN,
+    ),
+    // Типы памяти — какие слои/категории реально попадают в промпт модели,
+    // в memory-snapshot и в доступные агенту функции (само сохранение
+    // вручную на экране "Память и профиль" эти тумблеры не ограничивают).
+    // Число видимых вкладок на этом экране зависит от того, что здесь
+    // включено: выключенная рабочая/долговременная память скрывает
+    // соответствующую вкладку.
+    SettingsFieldDef("working_memory_enabled", "Рабочая память (текущий чат)", GROUP_MEMORY, FieldType.BOOLEAN),
+    SettingsFieldDef("long_term_memory_enabled", "Долговременная память (профиль/решения/знания)", GROUP_MEMORY, FieldType.BOOLEAN),
+    SettingsFieldDef("episodic_memory_enabled", "Эпизодическая память (события)", GROUP_MEMORY, FieldType.BOOLEAN),
+    SettingsFieldDef("semantic_memory_enabled", "Семантическая память (факты)", GROUP_MEMORY, FieldType.BOOLEAN),
+    SettingsFieldDef("procedural_memory_enabled", "Процедурная память (как делать)", GROUP_MEMORY, FieldType.BOOLEAN),
     SettingsFieldDef("summary_system_prompt", "Системный prompt для суммаризации", GROUP_SUMMARIZATION, FieldType.MULTILINE_STRING),
     SettingsFieldDef("summary_prompt", "Шаблон prompt пользователя", GROUP_SUMMARIZATION, FieldType.MULTILINE_STRING),
     SettingsFieldDef(
@@ -122,7 +137,7 @@ val AGENT_SETTINGS_FIELDS: List<SettingsFieldDef> = listOf(
  * экране настроек по умолчанию (единственном экране уровня приложения, а не
  * сервера) и должен идти самым первым — раньше блока "Модель". */
 val SETTINGS_GROUP_ORDER = listOf(
-    GROUP_CONNECTION, GROUP_MODEL, GROUP_RESPONSE, GROUP_TOOLS,
+    GROUP_CONNECTION, GROUP_MODEL, GROUP_RESPONSE, GROUP_TOOLS, GROUP_MEMORY,
     GROUP_SUMMARIZATION, GROUP_CONTEXT_STRATEGY, GROUP_EXTRA,
 )
 
@@ -140,6 +155,12 @@ fun readSettingsField(settings: Settings, sysName: String): Any? = when (sysName
     "stop_sequences" -> settings.stop_sequences
     "tool_choice" -> settings.tool_choice
     "tools_json" -> settings.tools_json
+    "memory_tools_enabled" -> settings.memory_tools_enabled
+    "working_memory_enabled" -> settings.working_memory_enabled
+    "long_term_memory_enabled" -> settings.long_term_memory_enabled
+    "episodic_memory_enabled" -> settings.episodic_memory_enabled
+    "semantic_memory_enabled" -> settings.semantic_memory_enabled
+    "procedural_memory_enabled" -> settings.procedural_memory_enabled
     "summary_prompt" -> settings.summary_prompt
     "summary_system_prompt" -> settings.summary_system_prompt
     "autosummary" -> settings.autosummary

@@ -6,6 +6,7 @@ import com.example.agentsapp.data.remote.AgentApiException
 import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.AgentWithChats
 import com.example.agentsapp.data.remote.ModelInfo
+import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.repository.AgentsCoreRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,8 +19,17 @@ data class MainUiState(
     val isLoading: Boolean = true,
     val agentsWithChats: List<AgentWithChats> = emptyList(),
     val models: List<ModelInfo> = emptyList(),
+    // Для бейджа "Профиль" у карточки агента (default_profile_id) и строки
+    // чата (active_profile_id) — сами Agent/Chat хранят только id профиля,
+    // имя нужно искать здесь по id.
+    val profiles: List<Profile> = emptyList(),
     val errorMessage: String? = null,
-)
+) {
+    /** Имя профиля по id — null, если профиль не подключён или почему-то не
+     * найден в справочнике (например, удалён параллельно другим клиентом). */
+    fun profileNameOf(profileId: String?): String? =
+        profileId?.let { id -> profiles.firstOrNull { it.id == id }?.name }
+}
 
 /**
  * ViewModel главного экрана. Работает исключительно через
@@ -60,8 +70,12 @@ class MainViewModel(
             } else {
                 existingModels
             }
+            // В отличие от models — не кэшируется между обновлениями:
+            // профили редактируются на отдельном экране ("Профили"), и после
+            // возврата оттуда бейдж должен сразу показать актуальное имя.
+            val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
             _uiState.update {
-                it.copy(isLoading = false, agentsWithChats = agents, models = models)
+                it.copy(isLoading = false, agentsWithChats = agents, models = models, profiles = profiles)
             }
         } catch (e: Exception) {
             _uiState.update { it.copy(isLoading = false, errorMessage = friendlyMessage(e)) }

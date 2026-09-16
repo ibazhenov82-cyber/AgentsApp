@@ -9,6 +9,7 @@ import com.example.agentsapp.data.remote.Branch
 import com.example.agentsapp.data.remote.Chat
 import com.example.agentsapp.data.remote.ChatStats
 import com.example.agentsapp.data.remote.Message
+import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.repository.AgentsCoreRepository
 import kotlinx.coroutines.Job
@@ -64,6 +65,10 @@ data class ChatUiState(
      * токенов, seed, потоковые ответы, рассуждения, температура, top_p) на
      * экране чата и в списке чатов на главном экране. */
     val settings: Settings? = null,
+    /** Имя подключённого к чату профиля-пайплайна персонализации
+     * (`Chat.active_profile_id`, ищется по каталогу профилей) — null, если
+     * профиль не подключён. Для бейджа "Профиль" на экране чата. */
+    val activeProfileName: String? = null,
     val stats: ChatStats? = null,
     /** Общее число сообщений в чате (все ветки, а не только видимая) — для
      * заголовка "Чат N (M сообщений)" в шапке экрана. */
@@ -182,6 +187,10 @@ class ChatViewModel(
         chat = loadedChat
         val agent = repository.getAgent(loadedChat.agent_id)
         val models = repository.listModels()
+        // Не блокирует загрузку экрана, если каталог профилей недоступен —
+        // бейдж "Профиль" в этом случае просто не покажется (как и на
+        // главном экране, см. MainViewModel.loadData).
+        val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
         allMessages = repository.listMessages(chatId)
         val branches = if (includeBranches) {
             runCatching { repository.listBranches(chatId) }.getOrDefault(emptyList())
@@ -201,6 +210,7 @@ class ChatViewModel(
                 autosummaryByMessages = loadedChat.settings.autosummary_by_messages,
                 autosummaryByTokens = loadedChat.settings.autosummary_by_tokens,
                 settings = loadedChat.settings,
+                activeProfileName = profileNameOf(profiles, loadedChat.active_profile_id),
                 stats = loadedChat.stats,
                 messageCount = allMessages.size,
                 messages = visibleMessages(allMessages, it.selectedBranch),
@@ -218,6 +228,7 @@ class ChatViewModel(
             val branch = _state.value.selectedBranch
             val loadedChat = repository.getChat(chatId, branch = branch)
             chat = loadedChat
+            val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
             allMessages = repository.listMessages(chatId)
             _state.update {
                 it.copy(
@@ -227,6 +238,7 @@ class ChatViewModel(
                     autosummaryByMessages = loadedChat.settings.autosummary_by_messages,
                     autosummaryByTokens = loadedChat.settings.autosummary_by_tokens,
                     settings = loadedChat.settings,
+                    activeProfileName = profileNameOf(profiles, loadedChat.active_profile_id),
                     stats = loadedChat.stats,
                     messageCount = allMessages.size,
                     messages = visibleMessages(allMessages, it.selectedBranch),
@@ -242,6 +254,11 @@ class ChatViewModel(
      * то же правило, что и на сервере при отправке сообщений (`_filter_by_branch`). */
     private fun visibleMessages(all: List<Message>, selectedBranch: Int): List<Message> =
         if (selectedBranch == 0) all.filter { it.branch == 0 } else all.filter { it.branch == 0 || it.branch == selectedBranch }
+
+    /** Имя профиля по id из каталога — null, если профиль не подключён или
+     * не найден в каталоге (см. одноимённую логику в MainViewModel/MainScreen). */
+    private fun profileNameOf(profiles: List<Profile>, profileId: String?): String? =
+        profileId?.let { id -> profiles.firstOrNull { it.id == id }?.name }
 
     /** Последнее (по порядку в истории) сообщение с непустыми фактами —
      * "факты сохранены под последним отправленным сообщением" (Доработка 7). */

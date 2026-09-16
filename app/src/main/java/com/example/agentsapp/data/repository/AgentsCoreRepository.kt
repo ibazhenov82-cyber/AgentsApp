@@ -8,11 +8,16 @@ import com.example.agentsapp.data.remote.Branch
 import com.example.agentsapp.data.remote.Chat
 import com.example.agentsapp.data.remote.DefaultSettings
 import com.example.agentsapp.data.remote.HealthResponse
+import com.example.agentsapp.data.remote.LongTermMemoryEntry
+import com.example.agentsapp.data.remote.MemorySnapshot
 import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.ModelHealth
 import com.example.agentsapp.data.remote.ModelInfo
+import com.example.agentsapp.data.remote.Profile
+import com.example.agentsapp.data.remote.RegisteredSkill
 import com.example.agentsapp.data.remote.SendMessageResponse
 import com.example.agentsapp.data.remote.Settings
+import com.example.agentsapp.data.remote.WorkingMemoryEntry
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.JsonElement
 
@@ -74,4 +79,37 @@ class AgentsCoreRepository(private val api: AgentsCoreApiClient) {
         branch: Int? = null,
     ): Flow<AgentStreamEvent> =
         api.streamMessage(chatId, text, getFacts, slidingWindow, autosummary, branch)
+
+    // ---- Рабочая/долговременная память и профили-пайплайны -------------------
+
+    suspend fun listWorkingMemory(chatId: String): List<WorkingMemoryEntry> = api.listWorkingMemory(chatId)
+    suspend fun saveWorkingMemory(chatId: String, key: String, value: String): WorkingMemoryEntry =
+        api.saveWorkingMemory(chatId, key, value)
+    suspend fun deleteWorkingMemory(chatId: String, key: String) = api.deleteWorkingMemory(chatId, key)
+
+    suspend fun listLongTermMemory(agentId: String, category: String? = null): List<LongTermMemoryEntry> =
+        api.listLongTermMemory(agentId, category)
+    suspend fun saveLongTermMemory(agentId: String, category: String, key: String, value: String): LongTermMemoryEntry =
+        api.saveLongTermMemory(agentId, category, key, value)
+    suspend fun deleteLongTermMemory(agentId: String, category: String, key: String) =
+        api.deleteLongTermMemory(agentId, category, key)
+
+    // Профили — общий справочник для всех агентов (см. Profile в AgentsCoreModels.kt).
+    suspend fun listProfiles(): List<Profile> = api.listProfiles()
+    suspend fun listRegisteredSkills(): List<RegisteredSkill> = api.listRegisteredSkills()
+    suspend fun createProfile(
+        name: String,
+        style: String? = null,
+        format: String? = null,
+        constraints: String? = null,
+        skillsJson: String = "",
+        skillNames: List<String>? = null,
+        orchestrationPrompt: String? = null,
+    ): Profile = api.createProfile(name, style, format, constraints, skillsJson, skillNames, orchestrationPrompt)
+    suspend fun updateProfile(profileId: String, patch: Map<String, JsonElement>): Profile = api.updateProfile(profileId, patch)
+    suspend fun deleteProfile(profileId: String) = api.deleteProfile(profileId)
+    suspend fun setChatActiveProfile(chatId: String, profileId: String?): Chat = api.setChatActiveProfile(chatId, profileId)
+    suspend fun setAgentDefaultProfile(agentId: String, profileId: String?): Agent = api.setAgentDefaultProfile(agentId, profileId)
+
+    suspend fun getMemorySnapshot(chatId: String): MemorySnapshot = api.getMemorySnapshot(chatId)
 }

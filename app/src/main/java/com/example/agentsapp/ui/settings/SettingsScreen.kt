@@ -63,6 +63,17 @@ private sealed class SettingsRow {
     data class Field(val def: SettingsFieldDef) : SettingsRow()
 }
 
+/** Переключатели типов/слоёв памяти — недоступны (см. [FieldEditor]), пока
+ * не включена "Разрешить агенту сохранять память" (memory_tools_enabled);
+ * по замечанию пользователя. */
+private val MEMORY_TYPE_FIELD_NAMES = setOf(
+    "working_memory_enabled",
+    "long_term_memory_enabled",
+    "episodic_memory_enabled",
+    "semantic_memory_enabled",
+    "procedural_memory_enabled",
+)
+
 /** Переключатель (BOOLEAN) — единственный тип поля, для которого
  * floating-label в принципе не применим (это не поле ввода и не список), он
  * рисуется как обычно: лейбл слева, Switch справа, в одну строку. Все
@@ -165,19 +176,42 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                 item { HorizontalDivider() }
             }
 
+            // Профиль-пайплайн персонализации (замечание 1: "профиль
+            // выбирается в настройках агента/чата") — не часть generic-полей
+            // Settings, отдельная связь с общим справочником профилей.
+            if (state.showProfilePicker) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        GroupHeaderText("Профиль")
+                        ProfilePickerField(state = state, onSelected = viewModel::onProfileChange)
+                    }
+                }
+                item { HorizontalDivider() }
+            }
+
             items(rows) { row ->
                 when (row) {
                     is SettingsRow.GroupHeader -> GroupHeaderText(row.title)
-                    is SettingsRow.Field -> FieldEditor(
-                        def = row.def,
-                        value = state.values[row.def.sysName],
-                        modelEditable = state.modelEditable,
-                        models = state.models,
-                        onImmediateChange = { v -> viewModel.onImmediateChange(row.def.sysName, v) },
-                        onDebouncedChange = { v -> viewModel.onDebouncedChange(row.def.sysName, v) },
-                        onSliderDrag = { v -> viewModel.onSliderDrag(row.def.sysName, v) },
-                        onSliderChangeFinished = { viewModel.onSliderChangeFinished(row.def.sysName) },
-                    )
+                    is SettingsRow.Field -> {
+                        // Переключатели типов памяти недоступны, пока не включена
+                        // "Разрешить агенту сохранять память" (см. MEMORY_TYPE_FIELD_NAMES).
+                        val fieldEnabled = if (row.def.sysName in MEMORY_TYPE_FIELD_NAMES) {
+                            state.values["memory_tools_enabled"] as? Boolean ?: false
+                        } else {
+                            true
+                        }
+                        FieldEditor(
+                            def = row.def,
+                            value = state.values[row.def.sysName],
+                            enabled = fieldEnabled,
+                            modelEditable = state.modelEditable,
+                            models = state.models,
+                            onImmediateChange = { v -> viewModel.onImmediateChange(row.def.sysName, v) },
+                            onDebouncedChange = { v -> viewModel.onDebouncedChange(row.def.sysName, v) },
+                            onSliderDrag = { v -> viewModel.onSliderDrag(row.def.sysName, v) },
+                            onSliderChangeFinished = { viewModel.onSliderChangeFinished(row.def.sysName) },
+                        )
+                    }
                 }
             }
         }
@@ -267,6 +301,10 @@ private fun FieldEditor(
     onDebouncedChange: (Any?) -> Unit,
     onSliderDrag: (Float) -> Unit,
     onSliderChangeFinished: () -> Unit,
+    // Только для BOOLEAN-полей типов памяти: false, пока не включена
+    // "Разрешить агенту сохранять память" (см. MEMORY_TYPE_FIELD_NAMES) — на
+    // остальные типы полей не влияет.
+    enabled: Boolean = true,
 ) {
     when (def.type) {
         FieldType.BOOLEAN -> Row(
@@ -274,9 +312,18 @@ private fun FieldEditor(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(def.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            Text(
+                def.title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                },
+                modifier = Modifier.weight(1f),
+            )
             Spacer(Modifier.width(12.dp))
-            Switch(checked = value as? Boolean ?: false, onCheckedChange = onImmediateChange)
+            Switch(checked = value as? Boolean ?: false, onCheckedChange = onImmediateChange, enabled = enabled)
         }
 
         FieldType.MODEL_PICKER -> ModelPickerField(def.title, value as? String, modelEditable, models, onImmediateChange)
@@ -481,4 +528,48 @@ private fun ModelPickerField(
 private fun modelLabel(model: ModelInfo): String {
     val name = model.display_name.ifBlank { model.model_id }
     return if (model.is_local) "$name (локальная)" else name
+}
+
+/** Выбор профиля из общего справочника (`GET /profiles`, см.
+ * ProfilesScreen) — null означает "без профиля". В режиме настроек агента
+ * это default_profile_id (действует только на новые чаты, см. комментарий
+ * у `SettingsViewModel.onProfileChange`), в режиме настроек чата —
+ * active_profile_id именно этого чата. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProfilePickerField(state: SettingsUiState, onSelected: (String?) -> Unit) {
+    if (state.availableProfiles.isEmpty()) {
+        Text(
+            "Справочник профилей пуст — добавьте профиль на экране \"Профили\" (доступен с главного экрана).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    var expanded by remember { mutableStateOf(false) }
+    val selected = state.availableProfiles.firstOrNull { it.id == state.selectedProfileId }
+    val currentLabel = selected?.name ?: "Без профиля"
+
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = currentLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Профиль") },
+            modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Без профиля") },
+                onClick = { expanded = false; onSelected(null) },
+            )
+            state.availableProfiles.forEach { profile ->
+                DropdownMenuItem(
+                    text = { Text(profile.name) },
+                    onClick = { expanded = false; onSelected(profile.id) },
+                )
+            }
+        }
+    }
 }

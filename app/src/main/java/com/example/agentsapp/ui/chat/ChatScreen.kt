@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Summarize
@@ -120,6 +121,7 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     onBack: () -> Unit,
     onOpenChatSettings: () -> Unit,
+    onOpenMemory: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -212,6 +214,12 @@ fun ChatScreen(
                         }
                     },
                     actions = {
+                        // Память и профили-пайплайны (модель памяти + персонализация) —
+                        // отдельная кнопка от настроек чата, т.к. это отдельная сущность
+                        // с собственным CRUD и снимком памяти для проверки.
+                        IconButton(onClick = onOpenMemory, enabled = !state.isBusy) {
+                            Icon(Icons.Filled.Memory, contentDescription = "Память и профиль")
+                        }
                         IconButton(onClick = onOpenChatSettings, enabled = !state.isBusy) {
                             Icon(Icons.Filled.Settings, contentDescription = "Настройки чата")
                         }
@@ -249,9 +257,13 @@ fun ChatScreen(
         ) {
             if (!state.isLoading) {
                 AgentModelBar(state = state)
+                // Бейдж "Профиль" — в общем ряду с остальными бейджами настроек
+                // (справа от бейджа "Память: ..."), а не отдельным блоком (по
+                // замечанию пользователя) — см. SettingsSummary.
                 state.settings?.let { settings ->
                     SettingsSummary(
                         settings = settings,
+                        profileName = state.activeProfileName,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
                     )
                 }

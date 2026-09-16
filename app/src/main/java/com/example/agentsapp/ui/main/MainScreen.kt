@@ -15,8 +15,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -45,11 +45,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import com.example.agentsapp.R
 import com.example.agentsapp.data.remote.Agent
 import com.example.agentsapp.data.remote.AgentWithChats
 import com.example.agentsapp.data.remote.Chat
 import com.example.agentsapp.data.remote.ModelInfo
+import com.example.agentsapp.data.remote.Profile
+import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.ui.common.SettingsSummary
 
 /**
@@ -67,6 +71,7 @@ fun MainScreen(
     onOpenChatSettings: (chatId: String) -> Unit,
     onOpenModels: () -> Unit,
     onOpenDefaultSettings: () -> Unit,
+    onOpenProfiles: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -102,7 +107,16 @@ fun MainScreen(
                 title = { Text("AI Агенты") },
                 actions = {
                     IconButton(onClick = onOpenModels) {
-                        Icon(Icons.Filled.Memory, contentDescription = "Модели")
+                        // Иконка "Linked services" (Material Symbols, fonts.google.com/icons) —
+                        // её нет в классическом наборе Material Icons (material-icons-extended),
+                        // подключённом в проекте, поэтому используется точный SVG, экспортированный
+                        // как Android Vector Drawable — см. res/drawable/ic_linked_services.xml.
+                        Icon(painterResource(R.drawable.ic_linked_services), contentDescription = "Модели")
+                    }
+                    IconButton(onClick = onOpenProfiles) {
+                        // Справочник профилей-пайплайнов персонализации, общий для
+                        // всех агентов — доступ с главного экрана (замечание 1).
+                        Icon(Icons.Filled.Badge, contentDescription = "Профили")
                     }
                     IconButton(onClick = onOpenDefaultSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Настройки")
@@ -135,6 +149,7 @@ fun MainScreen(
                         AgentCard(
                             agentWithChats = agentWithChats,
                             models = uiState.models,
+                            profiles = uiState.profiles,
                             onOpenChat = onOpenChat,
                             onOpenAgentSettings = onOpenAgentSettings,
                             onOpenChatSettings = onOpenChatSettings,
@@ -238,6 +253,7 @@ fun MainScreen(
 private fun AgentCard(
     agentWithChats: AgentWithChats,
     models: List<ModelInfo>,
+    profiles: List<Profile>,
     onOpenChat: (String) -> Unit,
     onOpenAgentSettings: (String) -> Unit,
     onOpenChatSettings: (String) -> Unit,
@@ -250,6 +266,10 @@ private fun AgentCard(
     val model = models.find { it.id == agent.settings.model }
     // Суффикс "(локальная)" вместо отдельного бейджа (замечание 7).
     val modelLabel = model?.let { if (it.is_local) "${it.display_name} (локальная)" else it.display_name } ?: agent.settings.model
+    // default_profile_id — профиль ПО УМОЛЧАНИЮ для новых чатов этого агента
+    // (см. Agent.default_profile_id), не то же самое, что активный профиль
+    // конкретного чата (ChatRow ниже показывает свой бейдж по active_profile_id).
+    val agentProfileName = profileNameOf(profiles, agent.default_profile_id)
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -262,8 +282,14 @@ private fun AgentCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     // Сводка настроек агента (бейджи ограничений + температура/top_p
-                    // текстом) — в том же виде и порядке, что и на экране настроек.
-                    SettingsSummary(settings = agent.settings, modifier = Modifier.padding(top = 4.dp))
+                    // текстом) — в том же виде и порядке, что и на экране настроек;
+                    // бейдж "Профиль" — в этом же ряду, справа от "Память: ..."
+                    // (по замечанию пользователя), а не отдельным блоком.
+                    SettingsSummary(
+                        settings = agent.settings,
+                        profileName = agentProfileName,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
                 IconButton(onClick = onAddChat) {
                     Icon(Icons.Filled.Add, contentDescription = "Добавить чат")
@@ -282,6 +308,8 @@ private fun AgentCard(
                     agentWithChats.chats.forEach { chat ->
                         ChatRow(
                             chat = chat,
+                            agentSettings = agent.settings,
+                            profiles = profiles,
                             onOpenChat = { onOpenChat(chat.id) },
                             onOpenChatSettings = { onOpenChatSettings(chat.id) },
                             onCopyChat = { onCopyChat(chat) },
@@ -307,11 +335,18 @@ private fun AgentCard(
 @Composable
 private fun ChatRow(
     chat: Chat,
+    // Настройки агента-владельца — база для сравнения (замечание
+    // пользователя: в списке агентов бейджи чата показывают только то, чем
+    // он отличается от агента, см. SettingsSummary(baselineSettings = ...)).
+    agentSettings: Settings,
+    profiles: List<Profile>,
     onOpenChat: () -> Unit,
     onOpenChatSettings: () -> Unit,
     onCopyChat: () -> Unit,
     onDeleteChat: () -> Unit,
 ) {
+    val chatProfileName = profileNameOf(profiles, chat.active_profile_id)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -332,9 +367,20 @@ private fun ChatRow(
                     ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                // Сводка настроек ЭТОГО чата (может отличаться от настроек
-                // агента-владельца) — те же бейджи, что и на экране чата.
-                SettingsSummary(settings = chat.settings, modifier = Modifier.padding(top = 4.dp))
+                // Сводка настроек ЭТОГО чата — здесь, в списке агентов,
+                // показываем только то, чем настройки чата отличаются от
+                // настроек агента-владельца (baselineSettings = agentSettings,
+                // по замечанию пользователя): если, например, "Потоковые
+                // ответы" совпадают — бейдж не показываем, если чат их
+                // выключил — показываем "Потоковые ответы (Выкл.)". На
+                // экране самого чата (ChatScreen) сравнения нет — там всегда
+                // видны все включённые настройки этого чата целиком.
+                SettingsSummary(
+                    settings = chat.settings,
+                    baselineSettings = agentSettings,
+                    profileName = chatProfileName,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
             IconButton(onClick = onCopyChat) {
                 Icon(Icons.Filled.ContentCopy, contentDescription = "Копировать чат")
@@ -399,3 +445,9 @@ private fun TextInputDialog(
         },
     )
 }
+
+/** Имя профиля по id (для бейджа "Профиль" — [com.example.agentsapp.ui.common.ProfileBadge],
+ * рисуется внутри [com.example.agentsapp.ui.common.SettingsSummary]) — null,
+ * если профиль не подключён (id == null) или не нашёлся в справочнике. */
+private fun profileNameOf(profiles: List<Profile>, profileId: String?): String? =
+    profileId?.let { id -> profiles.firstOrNull { it.id == id }?.name }

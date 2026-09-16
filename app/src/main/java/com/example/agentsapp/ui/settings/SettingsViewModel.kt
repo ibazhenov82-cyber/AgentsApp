@@ -6,6 +6,7 @@ import com.example.agentsapp.data.remote.AgentApiException
 import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.DefaultSettings
 import com.example.agentsapp.data.remote.ModelInfo
+import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.ServerConnectionSettings
 import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.remote.SettingsFieldDef
@@ -52,6 +53,15 @@ data class SettingsUiState(
     val isCheckingConnection: Boolean = false,
     val connectionCheckResult: String? = null,
     val connectionCheckSucceeded: Boolean = false,
+    /** Профиль-пайплайн персонализации выбирается здесь (не через generic
+     * [SettingsFieldDef] — это не поле [Settings], а отдельная связь агента/
+     * чата с общим справочником профилей, см. Agent.default_profile_id /
+     * Chat.active_profile_id). Показывается в режимах [SettingsMode.Agent] и
+     * [SettingsMode.Chat] — в режиме агента это выбор "по умолчанию" для
+     * НОВЫХ чатов, в режиме чата — активный профиль именно этого чата. */
+    val showProfilePicker: Boolean = false,
+    val availableProfiles: List<Profile> = emptyList(),
+    val selectedProfileId: String? = null,
     val errorMessage: String? = null,
 )
 
@@ -79,6 +89,7 @@ class SettingsViewModel(
             title = title, fields = fields, modelEditable = modelEditable, showResetButton = showReset,
             showConnectionBlock = mode is SettingsMode.Default,
             connectionUrl = if (mode is SettingsMode.Default) connectionSettings.currentBaseUrl() else "",
+            showProfilePicker = mode is SettingsMode.Agent || mode is SettingsMode.Chat,
         )
         loadAll()
     }
@@ -105,21 +116,27 @@ class SettingsViewModel(
                         val agent = repository.getAgent(mode.agentId)
                         val settings = repository.getAgentSettings(mode.agentId)
                         val models = runCatching { repository.listModels() }.getOrDefault(emptyList())
+                        val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
                         _state.value = _state.value.copy(
                             isLoading = false,
                             entityName = agent.name,
                             values = valuesFromSettings(settings),
                             models = models,
+                            availableProfiles = profiles,
+                            selectedProfileId = agent.default_profile_id,
                         )
                     }
                     is SettingsMode.Chat -> {
                         val chat = repository.getChat(mode.chatId)
                         val settings = repository.getChatSettings(mode.chatId)
+                        val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
                         _state.value = _state.value.copy(
                             isLoading = false,
                             entityName = chat.title,
                             values = valuesFromSettings(settings),
                             models = emptyList(),
+                            availableProfiles = profiles,
+                            selectedProfileId = chat.active_profile_id,
                         )
                     }
                 }
@@ -142,8 +159,31 @@ class SettingsViewModel(
         _state.value = _state.value.copy(values = _state.value.values + (sysName to value))
     }
 
-    /** Немедленное сохранение одного поля — для переключателей и выпадающих списков. */
+    /** Немедленное сохранение одного поля — для переключателей и выпадающих списков.
+     *
+     * "Разрешить агенту сохранять память" (memory_tools_enabled) — особый
+     * случай (по замечанию пользователя): переключатели типов памяти
+     * недоступны, пока эта настройка выключена (см. MEMORY_TYPE_FIELD_NAMES в
+     * SettingsScreen.kt), поэтому их состояние должно оставаться осмысленным
+     * само по себе, без отдельного открытого экрана. При включении —
+     * включаются "Рабочая" и "Долговременная" (остальные три — выключены), при
+     * выключении — сбрасываются в выключено все пять типов сразу. */
     fun onImmediateChange(sysName: String, value: Any?) {
+        if (sysName == "memory_tools_enabled") {
+            val enabled = value as? Boolean ?: false
+            val updates = mapOf(
+                "memory_tools_enabled" to enabled,
+                "working_memory_enabled" to enabled,
+                "long_term_memory_enabled" to enabled,
+                "episodic_memory_enabled" to false,
+                "semantic_memory_enabled" to false,
+                "procedural_memory_enabled" to false,
+            )
+            updates.forEach { (name, v) -> setLocalValue(name, v) }
+            debounceJobs[sysName]?.cancel()
+            pushPatch(updates)
+            return
+        }
         setLocalValue(sysName, value)
         debounceJobs[sysName]?.cancel()
         pushPatch(mapOf(sysName to value))
@@ -230,6 +270,26 @@ class SettingsViewModel(
                     connectionCheckResult = "Не удалось подключиться: ${errorTextFor(e)}",
                     connectionCheckSucceeded = false,
                 )
+            }
+        }
+    }
+
+    /** Подключить/отключить профиль ([profileId] == null — отключить).
+     * В режиме [SettingsMode.Agent] — это default_profile_id (действует
+     * только на НОВЫЕ чаты этого агента, см. Repository.create_chat на
+     * сервере); в режиме [SettingsMode.Chat] — active_profile_id именно
+     * этого чата, немедленно. */
+    fun onProfileChange(profileId: String?) {
+        _state.value = _state.value.copy(selectedProfileId = profileId)
+        viewModelScope.launch {
+            try {
+                when (mode) {
+                    is SettingsMode.Agent -> repository.setAgentDefaultProfile(mode.agentId, profileId)
+                    is SettingsMode.Chat -> repository.setChatActiveProfile(mode.chatId, profileId)
+                    is SettingsMode.Default -> Unit
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(errorMessage = errorTextFor(e))
             }
         }
     }
