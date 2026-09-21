@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.agentsapp.data.remote.AgentApiException
 import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.DefaultSettings
+import com.example.agentsapp.data.remote.Invariant
 import com.example.agentsapp.data.remote.ModelInfo
 import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.ServerConnectionSettings
@@ -62,6 +63,14 @@ data class SettingsUiState(
     val showProfilePicker: Boolean = false,
     val availableProfiles: List<Profile> = emptyList(),
     val selectedProfileId: String? = null,
+    /** Инварианты ("День 14") — по аналогии с профилем выше, но
+     * МНОЖЕСТВЕННЫЙ выбор из общего справочника (Agent.invariant_ids /
+     * Chat.invariant_ids) вместо одиночной ссылки. Итоговый набор,
+     * действующий в конкретном чате, — объединение выбора агента и выбора
+     * самого чата (см. Repository._effective_invariant_ids на сервере). */
+    val showInvariantsPicker: Boolean = false,
+    val availableInvariants: List<Invariant> = emptyList(),
+    val selectedInvariantIds: List<String> = emptyList(),
     val errorMessage: String? = null,
 )
 
@@ -90,6 +99,7 @@ class SettingsViewModel(
             showConnectionBlock = mode is SettingsMode.Default,
             connectionUrl = if (mode is SettingsMode.Default) connectionSettings.currentBaseUrl() else "",
             showProfilePicker = mode is SettingsMode.Agent || mode is SettingsMode.Chat,
+            showInvariantsPicker = mode is SettingsMode.Agent || mode is SettingsMode.Chat,
         )
         loadAll()
     }
@@ -117,6 +127,7 @@ class SettingsViewModel(
                         val settings = repository.getAgentSettings(mode.agentId)
                         val models = runCatching { repository.listModels() }.getOrDefault(emptyList())
                         val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
+                        val invariants = runCatching { repository.listInvariants() }.getOrDefault(emptyList())
                         _state.value = _state.value.copy(
                             isLoading = false,
                             entityName = agent.name,
@@ -124,12 +135,15 @@ class SettingsViewModel(
                             models = models,
                             availableProfiles = profiles,
                             selectedProfileId = agent.default_profile_id,
+                            availableInvariants = invariants,
+                            selectedInvariantIds = agent.invariant_ids,
                         )
                     }
                     is SettingsMode.Chat -> {
                         val chat = repository.getChat(mode.chatId)
                         val settings = repository.getChatSettings(mode.chatId)
                         val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
+                        val invariants = runCatching { repository.listInvariants() }.getOrDefault(emptyList())
                         _state.value = _state.value.copy(
                             isLoading = false,
                             entityName = chat.title,
@@ -137,6 +151,8 @@ class SettingsViewModel(
                             models = emptyList(),
                             availableProfiles = profiles,
                             selectedProfileId = chat.active_profile_id,
+                            availableInvariants = invariants,
+                            selectedInvariantIds = chat.invariant_ids,
                         )
                     }
                 }
@@ -286,6 +302,26 @@ class SettingsViewModel(
                 when (mode) {
                     is SettingsMode.Agent -> repository.setAgentDefaultProfile(mode.agentId, profileId)
                     is SettingsMode.Chat -> repository.setChatActiveProfile(mode.chatId, profileId)
+                    is SettingsMode.Default -> Unit
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(errorMessage = errorTextFor(e))
+            }
+        }
+    }
+
+    /** Множественный выбор инвариантов — заменяет весь набор целиком (см.
+     * PUT /agents/{id}/invariants и PUT /chats/{id}/invariants). В режиме
+     * [SettingsMode.Agent] действует во всех чатах этого агента; в режиме
+     * [SettingsMode.Chat] — только в этом чате (итоговый набор для чата —
+     * объединение обоих, считается на сервере). */
+    fun onInvariantsChange(invariantIds: List<String>) {
+        _state.value = _state.value.copy(selectedInvariantIds = invariantIds)
+        viewModelScope.launch {
+            try {
+                when (mode) {
+                    is SettingsMode.Agent -> repository.setAgentInvariants(mode.agentId, invariantIds)
+                    is SettingsMode.Chat -> repository.setChatInvariants(mode.chatId, invariantIds)
                     is SettingsMode.Default -> Unit
                 }
             } catch (e: Exception) {

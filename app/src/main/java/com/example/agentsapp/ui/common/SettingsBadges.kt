@@ -49,6 +49,11 @@ import com.example.agentsapp.ui.theme.BadgeChatFill
 fun SettingsSummary(
     settings: Settings,
     baselineSettings: Settings? = null,
+    // Инварианты (ТЗ "Инварианты" — тумблер `invariants_enabled` убран):
+    // считаются разрешёнными сами по себе, если для этого агента/чата
+    // выбран хотя бы один инвариант (`Agent.invariant_ids`/`Chat.invariant_ids`,
+    // само поле не входит в Settings) — bool передаёт вызывающий экран.
+    hasInvariants: Boolean = false,
     profileName: String? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -157,6 +162,25 @@ fun SettingsSummary(
             { flags -> if (flags[0]) memoryBadgeText(settings) else null },
             "Память: выключена",
         )?.let { text -> add { SettingsBadgeChip(text, tertiary, onTertiary) } }
+
+        // "Задачи" и "Инварианты" — по аналогии с остальными настройками
+        // (замечание пользователя: на главном экране не было бейджа по
+        // настройке "Задачи" в списке агентов/чатов, по аналогии с другими
+        // настройками); идут сразу после бейджа памяти, перед бейджем профиля.
+        diffBadgeText(
+            settings.task_tracking_enabled, baselineSettings?.task_tracking_enabled, hasBaseline,
+            { if (it) "Задачи" else null },
+            "Задачи (Выкл.)",
+        )?.let { text -> add { SettingsBadgeChip(text, tertiary, onTertiary) } }
+
+        // Не через diffBadgeText: в отличие от прежнего булева тумблера,
+        // выбор инвариантов чата — НЕ копия/переопределение выбора агента
+        // (независимые списки, объединяются на лету), так что "изменилось
+        // относительно агента" здесь не имеет смысла — просто показываем,
+        // если у ЭТОГО владельца (агента или чата) выбран хотя бы один.
+        if (hasInvariants) {
+            add { SettingsBadgeChip("Инварианты", tertiary, onTertiary) }
+        }
 
         // Профиль — сразу после бейджа памяти, справа от него, в том же ряду
         // (по замечанию пользователя), а не отдельным блоком выше/ниже; не

@@ -8,6 +8,7 @@ import com.example.agentsapp.data.remote.Branch
 import com.example.agentsapp.data.remote.Chat
 import com.example.agentsapp.data.remote.DefaultSettings
 import com.example.agentsapp.data.remote.HealthResponse
+import com.example.agentsapp.data.remote.Invariant
 import com.example.agentsapp.data.remote.LongTermMemoryEntry
 import com.example.agentsapp.data.remote.MemorySnapshot
 import com.example.agentsapp.data.remote.Message
@@ -17,6 +18,10 @@ import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.RegisteredSkill
 import com.example.agentsapp.data.remote.SendMessageResponse
 import com.example.agentsapp.data.remote.Settings
+import com.example.agentsapp.data.remote.TaskDetail
+import com.example.agentsapp.data.remote.TaskManagerStepEvent
+import com.example.agentsapp.data.remote.TaskStateMachineInfo
+import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.remote.WorkingMemoryEntry
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.JsonElement
@@ -112,4 +117,40 @@ class AgentsCoreRepository(private val api: AgentsCoreApiClient) {
     suspend fun setAgentDefaultProfile(agentId: String, profileId: String?): Agent = api.setAgentDefaultProfile(agentId, profileId)
 
     suspend fun getMemorySnapshot(chatId: String): MemorySnapshot = api.getMemorySnapshot(chatId)
+
+    // ---- День 14. Инварианты (общий справочник, см. Invariant в AgentsCoreModels.kt) ---
+
+    suspend fun listInvariants(): List<Invariant> = api.listInvariants()
+    suspend fun createInvariant(
+        title: String, ruleText: String, kind: String? = null, isActive: Boolean = true,
+    ): Invariant = api.createInvariant(title, ruleText, kind, isActive)
+    suspend fun updateInvariant(invariantId: String, patch: Map<String, JsonElement>): Invariant =
+        api.updateInvariant(invariantId, patch)
+    suspend fun deleteInvariant(invariantId: String) = api.deleteInvariant(invariantId)
+    suspend fun setAgentInvariants(agentId: String, invariantIds: List<String>): Agent =
+        api.setAgentInvariants(agentId, invariantIds)
+    suspend fun setChatInvariants(chatId: String, invariantIds: List<String>): Chat =
+        api.setChatInvariants(chatId, invariantIds)
+
+    // ---- День 13/15. Состояние задачи (Task State Machine) --------------------
+
+    suspend fun getTaskStateMachine(): TaskStateMachineInfo = api.getTaskStateMachine()
+    suspend fun setTaskStateMachineInvariants(invariantIds: List<String>): TaskStateMachineInfo =
+        api.setTaskStateMachineInvariants(invariantIds)
+
+    /** [includeCompleted] — см. `AgentsCoreApiClient.listChatTasks`. */
+    suspend fun listChatTasks(chatId: String, includeCompleted: Boolean = false): List<TaskSummary> =
+        api.listChatTasks(chatId, includeCompleted)
+    suspend fun listAgentTasks(agentId: String, includeCompleted: Boolean = false): List<TaskSummary> =
+        api.listAgentTasks(agentId, includeCompleted)
+    suspend fun getTask(taskId: String): TaskDetail = api.getTask(taskId)
+    suspend fun applyTaskActionManually(taskId: String, action: String, note: String? = null): TaskDetail =
+        api.applyTaskActionManually(taskId, action, note)
+    suspend fun deleteTask(taskId: String) = api.deleteTask(taskId)
+
+    /** "Менеджер задач" (редизайн) — см. [AgentsCoreApiClient.stepTaskManager].
+     * [autoPause] = true ("Продолжить", один шаг), false ("Выполнить", без
+     * остановок до done). */
+    fun stepTaskManager(chatId: String, taskId: String, autoPause: Boolean = true): Flow<TaskManagerStepEvent> =
+        api.stepTaskManager(chatId, taskId, autoPause)
 }

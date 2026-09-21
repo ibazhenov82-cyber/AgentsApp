@@ -5,12 +5,15 @@ import androidx.lifecycle.ViewModelProvider
 import com.example.agentsapp.data.remote.ServerConnectionSettings
 import com.example.agentsapp.data.repository.AgentsCoreRepository
 import com.example.agentsapp.ui.chat.ChatViewModel
+import com.example.agentsapp.ui.invariants.InvariantsViewModel
 import com.example.agentsapp.ui.main.MainViewModel
 import com.example.agentsapp.ui.memory.MemoryViewModel
 import com.example.agentsapp.ui.models.ModelsViewModel
 import com.example.agentsapp.ui.profiles.ProfilesViewModel
 import com.example.agentsapp.ui.settings.SettingsMode
 import com.example.agentsapp.ui.settings.SettingsViewModel
+import com.example.agentsapp.ui.taskmachines.TaskMachinesViewModel
+import com.example.agentsapp.ui.tasks.TaskDetailViewModel
 
 /** По одной небольшой фабрике на экран — проще единой фабрики с ветвлением
  * по `Class<T>`, когда аргументы конструктора (например, `chatId`)
@@ -66,4 +69,29 @@ class ProfilesViewModelFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
         ProfilesViewModel(repository) as T
+}
+
+class InvariantsViewModelFactory(
+    private val repository: AgentsCoreRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        InvariantsViewModel(repository) as T
+}
+
+class TaskMachinesViewModelFactory(
+    private val repository: AgentsCoreRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        TaskMachinesViewModel(repository) as T
+}
+
+class TaskDetailViewModelFactory(
+    private val taskId: String,
+    private val repository: AgentsCoreRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        TaskDetailViewModel(taskId, repository) as T
 }

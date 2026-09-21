@@ -1,5 +1,6 @@
 package com.example.agentsapp.ui.memory
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -15,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,7 +50,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import com.example.agentsapp.data.remote.LongTermMemoryEntry
+import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.remote.WorkingMemoryEntry
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -64,7 +70,7 @@ import kotlinx.serialization.json.JsonPrimitive
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MemoryScreen(viewModel: MemoryViewModel, onBack: () -> Unit) {
+fun MemoryScreen(viewModel: MemoryViewModel, onBack: () -> Unit, onOpenTask: (taskId: String) -> Unit = {}) {
     val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showAddWorkingDialog by remember { mutableStateOf(false) }
@@ -85,6 +91,9 @@ fun MemoryScreen(viewModel: MemoryViewModel, onBack: () -> Unit) {
     // "Снимок" не гейтится и виден всегда.
     val visibleTabs = MemoryTab.entries.filter { tab ->
         when (tab) {
+            // Видна только при включённой настройке "Отслеживать задачи"
+            // (пункт 4/5 замечаний) — первая в списке (см. порядок enum MemoryTab).
+            MemoryTab.TASKS -> state.taskTrackingEnabled
             MemoryTab.WORKING -> state.workingMemoryEnabled
             MemoryTab.LONG_TERM -> state.enabledLongTermCategories.isNotEmpty()
             MemoryTab.SNAPSHOT -> true
@@ -95,7 +104,7 @@ fun MemoryScreen(viewModel: MemoryViewModel, onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Память и профиль") },
+                title = { Text("Память") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
@@ -106,6 +115,9 @@ fun MemoryScreen(viewModel: MemoryViewModel, onBack: () -> Unit) {
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             when (effectiveTab) {
+                MemoryTab.TASKS -> FloatingActionButton(onClick = viewModel::loadTasks) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Обновить список задач")
+                }
                 MemoryTab.WORKING -> FloatingActionButton(onClick = { showAddWorkingDialog = true }) {
                     Icon(Icons.Filled.Add, contentDescription = "Сохранить в рабочую память")
                 }
@@ -137,6 +149,14 @@ fun MemoryScreen(viewModel: MemoryViewModel, onBack: () -> Unit) {
             }
 
             when (effectiveTab) {
+                MemoryTab.TASKS -> TasksTab(
+                    state = state,
+                    onOpenTask = onOpenTask,
+                    onToggleIncludeCompleted = viewModel::toggleTasksIncludeCompleted,
+                    onPauseTask = viewModel::pauseTaskInline,
+                    onContinueTask = viewModel::continueTaskInline,
+                    onExecuteTask = viewModel::executeTaskInline,
+                )
                 MemoryTab.WORKING -> WorkingMemoryTab(
                     entries = state.workingMemory,
                     onDelete = viewModel::deleteWorkingMemory,
@@ -178,9 +198,113 @@ fun MemoryScreen(viewModel: MemoryViewModel, onBack: () -> Unit) {
 }
 
 private fun tabTitle(tab: MemoryTab): String = when (tab) {
+    MemoryTab.TASKS -> "Задачи"
     MemoryTab.WORKING -> "Рабочая"
     MemoryTab.LONG_TERM -> "Долговременная"
     MemoryTab.SNAPSHOT -> "Снимок"
+}
+
+// ---- вкладка "Задачи" (День 13) --------------------------------------------
+
+@Composable
+private fun TasksTab(
+    state: MemoryUiState,
+    onOpenTask: (String) -> Unit,
+    onToggleIncludeCompleted: () -> Unit,
+    onPauseTask: (String) -> Unit,
+    onContinueTask: (String) -> Unit,
+    onExecuteTask: (String) -> Unit,
+) {
+    if (state.isTasksLoading && state.tasks.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+    Column(modifier = Modifier.fillMaxSize()) {
+        TextButton(onClick = onToggleIncludeCompleted, modifier = Modifier.padding(horizontal = 8.dp)) {
+            Text(if (state.tasksIncludeCompleted) "Скрыть выполненные" else "Показать выполненные")
+        }
+        if (state.tasks.isEmpty()) {
+            EmptyHint("У этого чата пока нет задач.")
+            return
+        }
+        LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(state.tasks, key = { it.id }) { task ->
+                TaskCard(
+                    task = task,
+                    isRunning = task.id in state.runningTaskIds,
+                    runIsAutoPause = state.runningTaskAutoPause[task.id] ?: true,
+                    onOpenTask = { onOpenTask(task.id) },
+                    onPauseTask = { onPauseTask(task.id) },
+                    onContinueTask = { onContinueTask(task.id) },
+                    onExecuteTask = { onExecuteTask(task.id) },
+                )
+            }
+        }
+    }
+}
+
+/** Карточка задачи во вкладке "Задачи" — редизайн "Менеджера задач"
+ * (замечание пользователя): "Продолжить"/"Выполнить" обращаются к модели (см.
+ * `MemoryViewModel.continueTaskInline`/`executeTaskInline`), "Пауза" —
+ * единственное оставшееся ручное действие; дублирует по функционалу кнопку
+ * карточки-подтверждения на экране чата. Пока идёт шаг/цикл — вместо кнопок
+ * показывается индикатор и кнопка "Пауза" (дополнение пользователя: прервать
+ * "Выполнить" можно в любой момент). */
+@Composable
+private fun TaskCard(
+    task: TaskSummary,
+    isRunning: Boolean,
+    runIsAutoPause: Boolean,
+    onOpenTask: () -> Unit,
+    onPauseTask: () -> Unit,
+    onContinueTask: () -> Unit,
+    onExecuteTask: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f).clickable(onClick = onOpenTask)) {
+                Text(task.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    "${task.status_display} · ${task.state_display_name}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (isRunning) {
+                    Text(
+                        text = if (runIsAutoPause) "Выполняется следующий этап…" else "Менеджер задач выполняет задачу…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (task.status != "done") {
+                if (isRunning) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp).padding(end = 4.dp))
+                    IconButton(onClick = onPauseTask) {
+                        Icon(Icons.Filled.Pause, contentDescription = "Поставить на паузу")
+                    }
+                } else {
+                    if (task.status == "active") {
+                        IconButton(onClick = onPauseTask) {
+                            Icon(Icons.Filled.Pause, contentDescription = "Поставить на паузу")
+                        }
+                    }
+                    IconButton(onClick = onContinueTask, enabled = task.next_state_display_name != null) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = "Продолжить")
+                    }
+                    IconButton(onClick = onExecuteTask, enabled = task.next_state_display_name != null) {
+                        Icon(Icons.Filled.SkipNext, contentDescription = "Выполнить")
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---- вкладка "Рабочая память" ----------------------------------------------

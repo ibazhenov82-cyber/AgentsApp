@@ -61,6 +61,7 @@ const val GROUP_MODEL = "Модель"
 const val GROUP_RESPONSE = "Параметры ответа"
 const val GROUP_TOOLS = "Инструменты"
 const val GROUP_MEMORY = "Память"
+const val GROUP_TASKS = "Задачи"
 const val GROUP_SUMMARIZATION = "Суммаризация запросов"
 const val GROUP_CONTEXT_STRATEGY = "Стратегии управления контекстом"
 const val GROUP_EXTRA = "Дополнительно"
@@ -110,6 +111,17 @@ val AGENT_SETTINGS_FIELDS: List<SettingsFieldDef> = listOf(
     SettingsFieldDef("episodic_memory_enabled", "Эпизодическая память (события)", GROUP_MEMORY, FieldType.BOOLEAN),
     SettingsFieldDef("semantic_memory_enabled", "Семантическая память (факты)", GROUP_MEMORY, FieldType.BOOLEAN),
     SettingsFieldDef("procedural_memory_enabled", "Процедурная память (как делать)", GROUP_MEMORY, FieldType.BOOLEAN),
+    // "Отслеживать задачи" (День 13) — по умолчанию выключено. Пока
+    // выключено, задачи не создаются/не сохраняются, и клиент не должен
+    // показывать НИКАКИЕ элементы интерфейса задач (агрегированный блок на
+    // карточке агента, ссылку на экране чата, вкладку "Задачи" на экране
+    // памяти) — см. места использования `settings.task_tracking_enabled` в
+    // MainScreen.kt/ChatScreen.kt/MemoryScreen.kt.
+    SettingsFieldDef("task_tracking_enabled", "Отслеживать задачи", GROUP_TASKS, FieldType.BOOLEAN),
+    // "Менеджер задач" (обновление "Дня 13") — лимит автономных шагов подряд
+    // без участия пользователя (защита от зацикливания/расхода токенов),
+    // считается на уровне чата в целом; 0 — лимит отключён.
+    SettingsFieldDef("task_manager_max_steps", "Лимит автоматических шагов менеджера задач", GROUP_TASKS, FieldType.INT),
     SettingsFieldDef("summary_system_prompt", "Системный prompt для суммаризации", GROUP_SUMMARIZATION, FieldType.MULTILINE_STRING),
     SettingsFieldDef("summary_prompt", "Шаблон prompt пользователя", GROUP_SUMMARIZATION, FieldType.MULTILINE_STRING),
     SettingsFieldDef(
@@ -137,7 +149,7 @@ val AGENT_SETTINGS_FIELDS: List<SettingsFieldDef> = listOf(
  * экране настроек по умолчанию (единственном экране уровня приложения, а не
  * сервера) и должен идти самым первым — раньше блока "Модель". */
 val SETTINGS_GROUP_ORDER = listOf(
-    GROUP_CONNECTION, GROUP_MODEL, GROUP_RESPONSE, GROUP_TOOLS, GROUP_MEMORY,
+    GROUP_CONNECTION, GROUP_MODEL, GROUP_RESPONSE, GROUP_TOOLS, GROUP_MEMORY, GROUP_TASKS,
     GROUP_SUMMARIZATION, GROUP_CONTEXT_STRATEGY, GROUP_EXTRA,
 )
 
@@ -161,6 +173,8 @@ fun readSettingsField(settings: Settings, sysName: String): Any? = when (sysName
     "episodic_memory_enabled" -> settings.episodic_memory_enabled
     "semantic_memory_enabled" -> settings.semantic_memory_enabled
     "procedural_memory_enabled" -> settings.procedural_memory_enabled
+    "task_tracking_enabled" -> settings.task_tracking_enabled
+    "task_manager_max_steps" -> settings.task_manager_max_steps
     "summary_prompt" -> settings.summary_prompt
     "summary_system_prompt" -> settings.summary_system_prompt
     "autosummary" -> settings.autosummary

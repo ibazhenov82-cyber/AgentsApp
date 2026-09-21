@@ -3,6 +3,7 @@ package com.example.agentsapp.ui.settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,7 +16,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Wifi
@@ -26,6 +29,7 @@ import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
@@ -53,6 +57,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.agentsapp.data.remote.FieldType
+import com.example.agentsapp.data.remote.INVARIANT_KIND_LABELS
+import com.example.agentsapp.data.remote.Invariant
 import com.example.agentsapp.data.remote.ModelInfo
 import com.example.agentsapp.data.remote.SETTINGS_GROUP_ORDER
 import com.example.agentsapp.data.remote.SettingsFieldDef
@@ -184,6 +190,23 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         GroupHeaderText("Профиль")
                         ProfilePickerField(state = state, onSelected = viewModel::onProfileChange)
+                    }
+                }
+                item { HorizontalDivider() }
+            }
+
+            // Инварианты ("День 14") — общий справочник (экран "Инварианты" с
+            // главного экрана), здесь только МНОЖЕСТВЕННЫЙ выбор того, какие
+            // из них действуют для этого агента/чата (не generic-поле
+            // Settings, как и профиль выше). Отдельного тумблера "Разрешить
+            // инварианты" больше нет (см. новое ТЗ) — как только здесь выбран
+            // хотя бы один инвариант, они считаются разрешёнными сами по
+            // себе; пустой выбор — инъекции не будет.
+            if (state.showInvariantsPicker) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        GroupHeaderText("Инварианты")
+                        InvariantsPickerField(state = state, onChanged = viewModel::onInvariantsChange)
                     }
                 }
                 item { HorizontalDivider() }
@@ -569,6 +592,87 @@ private fun ProfilePickerField(state: SettingsUiState, onSelected: (String?) -> 
                     text = { Text(profile.name) },
                     onClick = { expanded = false; onSelected(profile.id) },
                 )
+            }
+        }
+    }
+}
+
+/** Множественный выбор инвариантов из общего справочника (`GET /invariants`,
+ * см. InvariantsScreen) — тем же приёмом, что и выбор скиллов профиля
+ * (SkillsMultiSelectField в ProfilesScreen.kt): выпадающий список, который не
+ * закрывается после выбора пункта (можно отметить несколько подряд), плюс
+ * чипы текущего выбора под полем, по которым можно снять выбор одним
+ * нажатием. Пустой список (`onChanged(emptyList())`) — валидное состояние
+ * "ни один инвариант не выбран", а не "не изменено". */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InvariantsPickerField(state: SettingsUiState, onChanged: (List<String>) -> Unit) {
+    if (state.availableInvariants.isEmpty()) {
+        Text(
+            "Справочник инвариантов пуст — добавьте инвариант на экране \"Инварианты\" (доступен с главного экрана).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    var expanded by remember { mutableStateOf(false) }
+    val selectedIds = state.selectedInvariantIds
+    val selectedInvariants = state.availableInvariants.filter { it.id in selectedIds }
+    val fieldValue = if (selectedInvariants.isEmpty()) "Не выбрано" else selectedInvariants.joinToString(", ") { it.title }
+
+    fun toggle(invariantId: String) {
+        val updated = if (invariantId in selectedIds) selectedIds - invariantId else selectedIds + invariantId
+        onChanged(updated)
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = fieldValue,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Инварианты (общий справочник)") },
+                modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            )
+            ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                state.availableInvariants.forEach { invariant ->
+                    val checked = invariant.id in selectedIds
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(invariant.title, style = MaterialTheme.typography.bodyMedium)
+                                val kindLabel = invariant.kind?.let { INVARIANT_KIND_LABELS[it] ?: it }
+                                val subtitle = listOfNotNull(
+                                    kindLabel,
+                                    "выключен".takeIf { !invariant.is_active },
+                                ).joinToString(" · ")
+                                if (subtitle.isNotEmpty()) {
+                                    Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        },
+                        leadingIcon = if (checked) {
+                            { Icon(Icons.Filled.Check, contentDescription = null) }
+                        } else null,
+                        // Пункт НЕ закрывает список — можно отметить сразу
+                        // несколько инвариантов, не открывая список заново.
+                        onClick = { toggle(invariant.id) },
+                    )
+                }
+            }
+        }
+
+        if (selectedInvariants.isNotEmpty()) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                selectedInvariants.forEach { invariant ->
+                    FilterChip(
+                        selected = true,
+                        onClick = { toggle(invariant.id) },
+                        label = { Text(invariant.title) },
+                        trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "Убрать «${invariant.title}»", modifier = Modifier.size(16.dp)) },
+                    )
+                }
             }
         }
     }

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -17,6 +18,13 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Badge
+import androidx.compose.material.icons.filled.Gavel
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Schema
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -54,6 +62,7 @@ import com.example.agentsapp.data.remote.Chat
 import com.example.agentsapp.data.remote.ModelInfo
 import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.Settings
+import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.ui.common.SettingsSummary
 
 /**
@@ -72,6 +81,9 @@ fun MainScreen(
     onOpenModels: () -> Unit,
     onOpenDefaultSettings: () -> Unit,
     onOpenProfiles: () -> Unit,
+    onOpenInvariants: () -> Unit,
+    onOpenTaskMachines: () -> Unit,
+    onOpenTask: (taskId: String) -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -118,6 +130,22 @@ fun MainScreen(
                         // всех агентов — доступ с главного экрана (замечание 1).
                         Icon(Icons.Filled.Badge, contentDescription = "Профили")
                     }
+                    IconButton(onClick = onOpenInvariants) {
+                        // "День 14" — общий справочник инвариантов, по аналогии со
+                        // справочником профилей выше (та же кнопка на главном
+                        // экране, множественный выбор — в настройках агента/чата).
+                        Icon(Icons.Filled.Gavel, contentDescription = "Инварианты")
+                    }
+                    IconButton(onClick = onOpenTaskMachines) {
+                        // "Менеджер задач" (обновление "Дня 13") — переход к экрану настройки
+                        // состояний/действий/моделей состояний задач, по аналогии с кнопками
+                        // "Профили"/"Инварианты" выше (замечание пользователя: на главном экране
+                        // не было кнопки перехода к экрану настроек машины состояний).
+                        // Icons.Filled.AccountTree здесь не подходит — эта иконка уже занята
+                        // под другой смысл (кнопка "Ветки диалога" в ChatScreen.kt), поэтому
+                        // для машины состояний используется Icons.Filled.Schema.
+                        Icon(Icons.Filled.Schema, contentDescription = "Модели состояний задач")
+                    }
                     IconButton(onClick = onOpenDefaultSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Настройки")
                     }
@@ -146,10 +174,15 @@ fun MainScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     items(uiState.agentsWithChats, key = { it.agent.id }) { agentWithChats ->
+                        val agentId = agentWithChats.agent.id
                         AgentCard(
                             agentWithChats = agentWithChats,
                             models = uiState.models,
                             profiles = uiState.profiles,
+                            currentTasks = uiState.agentTasks[agentId].orEmpty(),
+                            completedTasks = uiState.agentCompletedTasks[agentId].orEmpty(),
+                            tasksExpanded = agentId in uiState.expandedTaskAgents,
+                            showCompletedTasks = agentId in uiState.showCompletedTaskAgents,
                             onOpenChat = onOpenChat,
                             onOpenAgentSettings = onOpenAgentSettings,
                             onOpenChatSettings = onOpenChatSettings,
@@ -157,6 +190,14 @@ fun MainScreen(
                             onAddChat = { createChatFor = agentWithChats },
                             onCopyChat = { copyChatTarget = it },
                             onDeleteChat = { deleteChatTarget = it },
+                            onToggleTasksExpanded = { viewModel.toggleTasksExpanded(agentId) },
+                            onToggleShowCompletedTasks = { viewModel.toggleShowCompletedTasks(agentId) },
+                            onOpenTask = onOpenTask,
+                            runningTaskIds = uiState.runningTaskIds,
+                            runningTaskAutoPause = uiState.runningTaskAutoPause,
+                            onPauseTask = { taskId -> viewModel.pauseTaskInline(agentId, taskId) },
+                            onContinueTask = { taskId, chatId -> viewModel.continueTaskInline(agentId, taskId, chatId) },
+                            onExecuteTask = { taskId, chatId -> viewModel.executeTaskInline(agentId, taskId, chatId) },
                         )
                     }
                 }
@@ -254,6 +295,14 @@ private fun AgentCard(
     agentWithChats: AgentWithChats,
     models: List<ModelInfo>,
     profiles: List<Profile>,
+    // Агрегированный блок "Задачи" (замечание пользователя, пункт 1) — только
+    // если у агента есть дочерние задачи И включена настройка
+    // "Отслеживать задачи" (иначе agentTasks для него не подгружается вовсе,
+    // см. MainViewModel.loadData).
+    currentTasks: List<TaskSummary>,
+    completedTasks: List<TaskSummary>,
+    tasksExpanded: Boolean,
+    showCompletedTasks: Boolean,
     onOpenChat: (String) -> Unit,
     onOpenAgentSettings: (String) -> Unit,
     onOpenChatSettings: (String) -> Unit,
@@ -261,6 +310,14 @@ private fun AgentCard(
     onAddChat: () -> Unit,
     onCopyChat: (Chat) -> Unit,
     onDeleteChat: (Chat) -> Unit,
+    onToggleTasksExpanded: () -> Unit,
+    onToggleShowCompletedTasks: () -> Unit,
+    onOpenTask: (String) -> Unit,
+    runningTaskIds: Set<String>,
+    runningTaskAutoPause: Map<String, Boolean>,
+    onPauseTask: (String) -> Unit,
+    onContinueTask: (taskId: String, chatId: String) -> Unit,
+    onExecuteTask: (taskId: String, chatId: String) -> Unit,
 ) {
     val agent = agentWithChats.agent
     val model = models.find { it.id == agent.settings.model }
@@ -287,6 +344,7 @@ private fun AgentCard(
                     // (по замечанию пользователя), а не отдельным блоком.
                     SettingsSummary(
                         settings = agent.settings,
+                        hasInvariants = agent.invariant_ids.isNotEmpty(),
                         profileName = agentProfileName,
                         modifier = Modifier.padding(top = 4.dp),
                     )
@@ -324,6 +382,181 @@ private fun AgentCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+            }
+
+            // Блок "Задачи" — только если у агента есть дочерние задачи
+            // (пункт 1 замечаний). По умолчанию свёрнут, показывает только
+            // количество текущих (активные + на паузе) рядом с заголовком.
+            if (currentTasks.isNotEmpty() || completedTasks.isNotEmpty()) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                TaskListBlock(
+                    currentTasks = currentTasks,
+                    completedTasks = completedTasks,
+                    expanded = tasksExpanded,
+                    showCompleted = showCompletedTasks,
+                    showChatTitle = true, // родительский чат — обязателен на карточке агента (пункт 1)
+                    runningTaskIds = runningTaskIds,
+                    runningTaskAutoPause = runningTaskAutoPause,
+                    onToggleExpanded = onToggleTasksExpanded,
+                    onToggleShowCompleted = onToggleShowCompletedTasks,
+                    onOpenTask = onOpenTask,
+                    onPauseTask = onPauseTask,
+                    onContinueTask = onContinueTask,
+                    onExecuteTask = onExecuteTask,
+                )
+            }
+        }
+    }
+}
+
+/** Список задач, свёрнутый по умолчанию — реализует пункт 1 замечаний
+ * пользователя: заголовок "Задачи (N)" с количеством ТЕКУЩИХ задач (активные
+ * + на паузе), разворачивается по клику; опционально — переключатель "Показать
+ * выполненные". Переиспользуется и для агрегированного блока на карточке
+ * агента (со столбцом "чат"), и потенциально для списка задач одного чата
+ * (см. вкладку "Задачи" на экране "Память" — showChatTitle = false там). */
+@Composable
+fun TaskListBlock(
+    currentTasks: List<TaskSummary>,
+    completedTasks: List<TaskSummary>,
+    expanded: Boolean,
+    showCompleted: Boolean,
+    showChatTitle: Boolean,
+    // Id задач, для которых сейчас идёт инлайн-шаг/цикл "Менеджера задач"
+    // (см. MainViewModel.runningTaskIds) — редизайн "Менеджера задач".
+    runningTaskIds: Set<String> = emptySet(),
+    runningTaskAutoPause: Map<String, Boolean> = emptyMap(),
+    onToggleExpanded: () -> Unit,
+    onToggleShowCompleted: () -> Unit,
+    onOpenTask: (String) -> Unit,
+    onPauseTask: (String) -> Unit,
+    onContinueTask: (taskId: String, chatId: String) -> Unit,
+    onExecuteTask: (taskId: String, chatId: String) -> Unit,
+) {
+    Column {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onToggleExpanded),
+        ) {
+            Text(
+                text = "Задачи (${currentTasks.size})",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Свернуть" else "Развернуть",
+            )
+        }
+        if (expanded) {
+            Column(modifier = Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (currentTasks.isEmpty()) {
+                    Text(
+                        text = "Текущих задач нет.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                currentTasks.forEach { task ->
+                    TaskSummaryRow(
+                        task = task,
+                        showChatTitle = showChatTitle,
+                        isRunning = task.id in runningTaskIds,
+                        runIsAutoPause = runningTaskAutoPause[task.id] ?: true,
+                        onOpenTask = { onOpenTask(task.id) },
+                        onPauseTask = { onPauseTask(task.id) },
+                        onContinueTask = { onContinueTask(task.id, task.chat_id) },
+                        onExecuteTask = { onExecuteTask(task.id, task.chat_id) },
+                    )
+                }
+                TextButton(onClick = onToggleShowCompleted) {
+                    Text(if (showCompleted) "Скрыть выполненные" else "Показать выполненные")
+                }
+                if (showCompleted) {
+                    if (completedTasks.isEmpty()) {
+                        Text(
+                            text = "Выполненных задач нет.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    completedTasks.forEach { task ->
+                        TaskSummaryRow(
+                            task = task,
+                            showChatTitle = showChatTitle,
+                            isRunning = false,
+                            runIsAutoPause = true,
+                            onOpenTask = { onOpenTask(task.id) },
+                            onPauseTask = {},
+                            onContinueTask = {},
+                            onExecuteTask = {},
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Одна строка задачи: наименование, статус, родительский чат (если
+ * [showChatTitle]) и, для текущих (не завершённых) задач, инлайн-действия
+ * "Продолжить"/"Выполнить"/"Пауза" — дублируют по функционалу кнопки
+ * карточки-подтверждения на экране чата (замечание пользователя, редизайн
+ * "Менеджера задач"; исходный пункт 1: "в частности в списке помимо
+ * наименования задачи и статуса указан чат, с которым она связана"). Пока
+ * идёт шаг/цикл — вместо кнопок показывается индикатор и кнопка "Пауза"
+ * (дополнение пользователя: прервать "Выполнить" можно в любой момент).
+ * Явного действия "Отклонить" в системе больше нет. */
+@Composable
+private fun TaskSummaryRow(
+    task: TaskSummary,
+    showChatTitle: Boolean,
+    isRunning: Boolean,
+    runIsAutoPause: Boolean,
+    onOpenTask: () -> Unit,
+    onPauseTask: () -> Unit,
+    onContinueTask: () -> Unit,
+    onExecuteTask: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenTask).padding(vertical = 4.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = task.title, style = MaterialTheme.typography.bodyMedium)
+            val subtitle = buildString {
+                append(task.status_display)
+                append(" · ")
+                append(task.state_display_name)
+                if (showChatTitle && task.chat_title != null) {
+                    append(" · ")
+                    append(task.chat_title)
+                }
+            }
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (task.status != "done") {
+            if (isRunning) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp).padding(end = 4.dp))
+                IconButton(onClick = onPauseTask) {
+                    Icon(Icons.Filled.Pause, contentDescription = "Поставить на паузу")
+                }
+            } else {
+                if (task.status == "active") {
+                    IconButton(onClick = onPauseTask) {
+                        Icon(Icons.Filled.Pause, contentDescription = "Поставить на паузу")
+                    }
+                }
+                IconButton(onClick = onContinueTask, enabled = task.next_state_display_name != null) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = "Продолжить")
+                }
+                IconButton(onClick = onExecuteTask, enabled = task.next_state_display_name != null) {
+                    Icon(Icons.Filled.SkipNext, contentDescription = "Выполнить")
+                }
             }
         }
     }
@@ -378,6 +611,7 @@ private fun ChatRow(
                 SettingsSummary(
                     settings = chat.settings,
                     baselineSettings = agentSettings,
+                    hasInvariants = chat.invariant_ids.isNotEmpty(),
                     profileName = chatProfileName,
                     modifier = Modifier.padding(top = 4.dp),
                 )

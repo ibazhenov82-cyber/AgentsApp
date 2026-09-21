@@ -232,10 +232,80 @@ class AgentsCoreApiClient(
     suspend fun setAgentDefaultProfile(agentId: String, profileId: String?): Agent =
         put("agents/$agentId/default-profile", ActiveProfileSetRequest(profileId), Agent.serializer())
 
+    // ---- День 14. Инварианты (общий справочник, см. Invariant в AgentsCoreModels.kt) ---
+
+    suspend fun listInvariants(): List<Invariant> =
+        get("invariants", ListSerializer(Invariant.serializer()))
+
+    suspend fun createInvariant(
+        title: String, ruleText: String, kind: String? = null, isActive: Boolean = true,
+    ): Invariant =
+        post("invariants", InvariantCreateRequest(title, ruleText, kind, isActive), Invariant.serializer())
+
+    suspend fun getInvariant(invariantId: String): Invariant = get("invariants/$invariantId", Invariant.serializer())
+
+    suspend fun updateInvariant(invariantId: String, patch: Map<String, JsonElement>): Invariant =
+        putJson("invariants/$invariantId", patch, Invariant.serializer())
+
+    suspend fun deleteInvariant(invariantId: String) {
+        executeNoContent("invariants/$invariantId", "DELETE")
+    }
+
+    /** Множественный выбор инвариантов для агента — действует во всех его
+     * чатах (см. комментарий у `Agent.invariant_ids`). */
+    suspend fun setAgentInvariants(agentId: String, invariantIds: List<String>): Agent =
+        put("agents/$agentId/invariants", InvariantIdsSetRequest(invariantIds), Agent.serializer())
+
+    /** То же самое, но уровня чата — итоговый набор объединяется с выбором агента. */
+    suspend fun setChatInvariants(chatId: String, invariantIds: List<String>): Chat =
+        put("chats/$chatId/invariants", InvariantIdsSetRequest(invariantIds), Chat.serializer())
+
     // ---- Снимок памяти ---------------------------------------------------------
 
     suspend fun getMemorySnapshot(chatId: String): MemorySnapshot =
         get("chats/$chatId/memory-snapshot", MemorySnapshot.serializer())
+
+    // ---- День 13/15. Состояние задачи (Task State Machine) --------------------
+    //
+    // Стейт-машина сама зашита на сервере (см. комментарий у TaskStateInfo в
+    // AgentsCoreModels.kt) — единственное, что здесь читается/пишется: список
+    // из 4 фиксированных состояний (только для чтения) и набор прикреплённых
+    // к машине инвариантов (полная замена, PUT).
+
+    suspend fun getTaskStateMachine(): TaskStateMachineInfo =
+        get("task-state-machine", TaskStateMachineInfo.serializer())
+
+    suspend fun setTaskStateMachineInvariants(invariantIds: List<String>): TaskStateMachineInfo =
+        put(
+            "task-state-machine/invariants",
+            TaskMachineInvariantIdsSetRequest(invariantIds),
+            TaskStateMachineInfo.serializer(),
+        )
+
+    // -- задачи: списки, детали, ручное вмешательство --
+
+    /** [includeCompleted] — по умолчанию false, только текущие (активные и на
+     * паузе); true добавляет и завершённые (по замечанию пользователя:
+     * "опционально можно показать и выполненные задачи"). */
+    suspend fun listChatTasks(chatId: String, includeCompleted: Boolean = false): List<TaskSummary> =
+        get("chats/$chatId/tasks?include_completed=$includeCompleted", ListSerializer(TaskSummary.serializer()))
+
+    /** Агрегированный список задач по ВСЕМ чатам агента — для блока "Задачи"
+     * на карточке агента (см. AgentCard в MainScreen.kt); каждая строка несёт
+     * свой родительский чат (`TaskSummary.chat_title`). */
+    suspend fun listAgentTasks(agentId: String, includeCompleted: Boolean = false): List<TaskSummary> =
+        get("agents/$agentId/tasks?include_completed=$includeCompleted", ListSerializer(TaskSummary.serializer()))
+
+    suspend fun getTask(taskId: String): TaskDetail = get("tasks/$taskId", TaskDetail.serializer())
+
+    /** Ручное вмешательство человека — кнопки "Поставить на паузу"/"Продолжить"
+     * на экране задачи (подтверждено пользователем, пункт 7.3). */
+    suspend fun applyTaskActionManually(taskId: String, action: String, note: String? = null): TaskDetail =
+        post("tasks/$taskId/actions", TaskManualActionRequest(action, note), TaskDetail.serializer())
+
+    suspend fun deleteTask(taskId: String) {
+        executeNoContent("tasks/$taskId", "DELETE")
+    }
 
     // ---- Сообщения ------------------------------------------------------
 
@@ -345,6 +415,84 @@ class AgentsCoreApiClient(
         awaitClose { call.cancel() }
     }.flowOn(Dispatchers.IO)
 
+    /** "Менеджер задач" (редизайн, замечание пользователя): один автономный
+     * шаг без нового сообщения пользователя, тот же формат SSE, что и у
+     * [streamMessage] — см. `POST /chats/{chat_id}/tasks/{task_id}/task-manager/step`
+     * на сервере. [autoPause] = true (по умолчанию, кнопка "Продолжить") —
+     * один шаг и снова пауза; false (кнопка "Выполнить") — без остановок до
+     * done, вызывающий код сам повторяет вызов в цикле, пока `shouldContinue`
+     * не станет false. Отмена сбора этого [Flow] (например, при нажатии
+     * "Пауза" во время цикла "Выполнить") закрывает HTTP-соединение через
+     * `awaitClose { call.cancel() }` — на сервере нет настоящей отмены
+     * генерации, но клиент прекращает ждать и должен отдельно вызвать
+     * ручное действие "pause" (см. [applyTaskActionManually]), чтобы задача
+     * формально считалась на паузе и на сервере. */
+    fun stepTaskManager(chatId: String, taskId: String, autoPause: Boolean = true): Flow<TaskManagerStepEvent> = callbackFlow {
+        val bodyJson = json.encodeToString(TaskManagerStepRequest.serializer(), TaskManagerStepRequest(autoPause))
+        val httpRequest = requestBuilder("chats/$chatId/tasks/$taskId/task-manager/step")
+            .header("Accept", "text/event-stream")
+            .post(bodyJson.toRequestBody(JSON_MEDIA_TYPE.toMediaType()))
+            .build()
+
+        val call = client.newCall(httpRequest)
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                close(AgentUnreachableException(e))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use { resp ->
+                    if (!resp.isSuccessful) {
+                        val raw = resp.body?.string()
+                        close(AgentApiException(resp.code, extractErrorMessage(raw)))
+                        return
+                    }
+                    val source = resp.body?.source() ?: run {
+                        close()
+                        return
+                    }
+                    try {
+                        while (!source.exhausted()) {
+                            val line = source.readUtf8Line() ?: break
+                            if (!line.startsWith("data:")) continue
+                            val data = line.removePrefix("data:").trim()
+                            if (data.isEmpty()) continue
+                            parseTaskManagerStepEvent(data)?.let { trySend(it) }
+                        }
+                    } catch (e: IOException) {
+                        close(e)
+                        return
+                    }
+                    close()
+                }
+            }
+        })
+
+        awaitClose { call.cancel() }
+    }.flowOn(Dispatchers.IO)
+
+    private fun parseTaskManagerStepEvent(data: String): TaskManagerStepEvent? {
+        val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return null
+        return when (obj["type"]?.jsonPrimitive?.content) {
+            "status" -> TaskManagerStepEvent.Status(status = obj["status"].stringOrNull().orEmpty())
+            "delta" -> TaskManagerStepEvent.Delta(
+                content = obj["content"].stringOrNull().orEmpty(),
+                reasoningContent = obj["reasoning_content"].stringOrNull().orEmpty(),
+            )
+            "done" -> obj["message"]?.let {
+                runCatching { json.decodeFromJsonElement(Message.serializer(), it) }.getOrNull()
+            }?.let {
+                TaskManagerStepEvent.Done(
+                    message = it,
+                    shouldContinue = (obj["should_continue"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false,
+                    taskStatus = obj["task_status"].stringOrNull() ?: "active",
+                )
+            }
+            "error" -> TaskManagerStepEvent.Error(obj["message"].stringOrNull() ?: "unknown error")
+            else -> null
+        }
+    }
+
     private fun parseStreamEvent(data: String): AgentStreamEvent? {
         val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return null
         return when (obj["type"]?.jsonPrimitive?.content) {
@@ -426,6 +574,10 @@ class AgentsCoreApiClient(
         is LongTermMemorySaveRequest -> LongTermMemorySaveRequest.serializer()
         is ProfileCreateRequest -> ProfileCreateRequest.serializer()
         is ActiveProfileSetRequest -> ActiveProfileSetRequest.serializer()
+        is InvariantCreateRequest -> InvariantCreateRequest.serializer()
+        is InvariantIdsSetRequest -> InvariantIdsSetRequest.serializer()
+        is TaskMachineInvariantIdsSetRequest -> TaskMachineInvariantIdsSetRequest.serializer()
+        is TaskManualActionRequest -> TaskManualActionRequest.serializer()
         else -> error("no serializer registered for ${body::class}")
     } as KSerializer<Any>
 

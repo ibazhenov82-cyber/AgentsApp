@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -43,6 +44,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Visibility
@@ -50,6 +53,10 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -61,6 +68,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.RadioButton
@@ -100,11 +108,15 @@ import androidx.compose.ui.unit.dp
 import com.example.agentsapp.data.remote.Branch
 import com.example.agentsapp.data.remote.ChatStats
 import com.example.agentsapp.data.remote.Message
+import com.example.agentsapp.data.remote.TaskEvent
+import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.ui.common.SettingsSummary
 import com.example.agentsapp.ui.theme.branchBadgeColor
 import com.example.agentsapp.ui.theme.summaryBubbleColor
 import com.mikepenz.markdown.m3.Markdown
 import kotlinx.coroutines.launch
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
 
 /**
@@ -122,6 +134,14 @@ fun ChatScreen(
     onBack: () -> Unit,
     onOpenChatSettings: () -> Unit,
     onOpenMemory: () -> Unit,
+    // Пункт 4 замечаний: текущая задача на экране чата — НЕ бэдж, а отдельная
+    // кликабельная строка-ссылка перед перепиской. Одна открытая задача — сразу
+    // на её детали; несколько (пункт 7: в чате может быть несколько
+    // параллельных открытых задач) — на список задач чата (вкладка "Задачи"
+    // экрана "Память"). Значения по умолчанию — на случай навигационных
+    // графов, ещё не прокинувших эти колбэки.
+    onOpenTask: (taskId: String) -> Unit = {},
+    onOpenTaskList: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -150,11 +170,18 @@ fun ChatScreen(
         }
     }
 
+    // Карточки-подтверждения задач (редизайн "Менеджера задач") — под
+    // последним сообщением, по одной на каждую открытую (активную/на паузе)
+    // задачу чата (пункт 4 замечаний пользователя: обычно она одна, но
+    // список чата может отслеживать несколько задач одновременно, пункт 7).
+    val taskCards = state.openTasks
+
     // Автоскролл вниз (замечание 11, доработка "в самый низ при появлении
     // любой новой информации, включая системные сообщения"): единый расчёт
     // числа элементов списка и единая точка скролла, чтобы не было гонки
     // между несколькими независимыми эффектами.
-    val itemCount = state.messages.size + (if (state.streamingDraft != null) 1 else 0) + (if (state.isSummarizing) 1 else 0)
+    val itemCount = state.messages.size + (if (state.streamingDraft != null) 1 else 0) +
+        (if (state.isSummarizing) 1 else 0) + taskCards.size
 
     // Мгновенный переход вниз при открытии чата (без анимации).
     LaunchedEffect(state.isLoading) {
@@ -263,8 +290,20 @@ fun ChatScreen(
                 state.settings?.let { settings ->
                     SettingsSummary(
                         settings = settings,
+                        hasInvariants = state.hasInvariants,
                         profileName = state.activeProfileName,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                    )
+                }
+                // Ссылка на текущую задачу(и) — отдельной строкой, НЕ бэдж
+                // (пункт 4 замечаний), сразу перед лентой сообщений.
+                if (state.openTasks.isNotEmpty()) {
+                    CurrentTaskLinkRow(
+                        openTasks = state.openTasks,
+                        taskManagerActiveTaskId = state.taskManagerActiveTaskId,
+                        onOpenTask = onOpenTask,
+                        onOpenTaskList = onOpenTaskList,
+                        onPauseTask = viewModel::pauseTask,
                     )
                 }
             }
@@ -278,7 +317,13 @@ fun ChatScreen(
                     if (state.isLoading) {
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                     } else {
-                        MessagesList(state = state, viewModel = viewModel, listState = listState)
+                        MessagesList(
+                            state = state,
+                            viewModel = viewModel,
+                            listState = listState,
+                            onOpenTask = onOpenTask,
+                            taskCards = taskCards,
+                        )
                         if (itemCount > 0) {
                             ScrollShortcutButtons(
                                 itemCount = itemCount,
@@ -603,6 +648,60 @@ private fun AgentModelBar(state: ChatUiState) {
     )
 }
 
+/** Строка-ссылка на текущую задачу(и) этого чата — НЕ бэдж, отдельная
+ * кликабельная строка перед перепиской (пункт 4 замечаний пользователя).
+ * Одна открытая задача — заголовок сразу с её названием/статусом, переход
+ * прямо на детали. Основное управление задачей (редизайн "Менеджера задач") —
+ * теперь карточка-подтверждение под последним сообщением (см.
+ * [TaskConfirmationCard]), а не эта строка: здесь остаётся только быстрый
+ * доступ к паузе, пока для задачи прямо сейчас идёт шаг/цикл ("Продолжить"/
+ * "Выполнить") — по замечанию пользователя, кнопка "Пауза" должна быть
+ * доступна в любой момент, не только прокрутив ленту вниз до карточки.
+ * Несколько параллельных открытых задач (пункт 7 — в чате их может быть
+ * несколько одновременно) — обобщённая ссылка "Задачи (N)" на список задач
+ * этого чата (там уже понятно, к какой из них что относится). */
+@Composable
+private fun CurrentTaskLinkRow(
+    openTasks: List<TaskSummary>,
+    taskManagerActiveTaskId: String?,
+    onOpenTask: (String) -> Unit,
+    onOpenTaskList: () -> Unit,
+    onPauseTask: (String) -> Unit,
+) {
+    val singleTask = openTasks.singleOrNull()
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (singleTask != null) {
+            val running = taskManagerActiveTaskId == singleTask.id
+            val label = if (running) {
+                "Задача: ${singleTask.title} — Менеджер задач выполняет задачу…"
+            } else {
+                "Задача: ${singleTask.title} — ${singleTask.status_display}"
+            }
+            TextButton(
+                onClick = { onOpenTask(singleTask.id) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(label, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Start)
+            }
+            if (running) {
+                IconButton(onClick = { onPauseTask(singleTask.id) }) {
+                    Icon(Icons.Filled.Pause, contentDescription = "Поставить на паузу")
+                }
+            }
+        } else {
+            TextButton(
+                onClick = onOpenTaskList,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Задачи (${openTasks.size})", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Start)
+            }
+        }
+    }
+}
+
 /** Сведения о токенах и заполнении контекста — прямо над полем ввода, в
  * одну строку (замечание 12), а не в топ-баре. */
 @Composable
@@ -668,6 +767,8 @@ private fun MessagesList(
     state: ChatUiState,
     viewModel: ChatViewModel,
     listState: LazyListState,
+    onOpenTask: (String) -> Unit,
+    taskCards: List<TaskSummary>,
 ) {
     val messages = state.messages
     val activeStartId = state.stats?.active_context_start_id
@@ -705,6 +806,7 @@ private fun MessagesList(
                     }
                 },
                 onToggleFacts = { viewModel.toggleMessageFactsExpanded(message.id) },
+                onOpenTask = onOpenTask,
             )
         }
 
@@ -718,6 +820,104 @@ private fun MessagesList(
         if (state.isSummarizing) {
             item(key = "summarizing-indicator") {
                 SummarizingIndicator()
+            }
+        }
+
+        // Карточки-подтверждения задач — под последним сообщением (пункт 2
+        // замечаний пользователя: "непосредственно в чате под последним
+        // сообщением выводить запрос"), после черновика/индикатора
+        // суммаризации, если они сейчас есть.
+        items(taskCards, key = { "task-card-${it.id}" }) { task ->
+            TaskConfirmationCard(
+                task = task,
+                isRunning = state.taskManagerActiveTaskId == task.id,
+                runIsAutoPause = state.taskManagerAutoPause,
+                onOpenTask = onOpenTask,
+                onContinueStep = viewModel::continueTaskStep,
+                onExecute = viewModel::executeTaskUntilDone,
+                onPause = viewModel::pauseTask,
+            )
+        }
+    }
+}
+
+/** Карточка-подтверждение задачи под последним сообщением чата — редизайн
+ * "Менеджера задач" (замечание пользователя): прежде чем модель продолжит
+ * планирование/выполнение/проверку задачи, она останавливается (задача на
+ * паузе), и здесь показывается "Задача: …, следующий этап: …. Продолжить
+ * выполнение?" с двумя кнопками — "Продолжить" (один этап, потом снова
+ * пауза) и "Выполнить" (без остановок до done); явного действия "Отклонить"
+ * в системе больше нет. Пока для этой задачи прямо сейчас идёт шаг/цикл —
+ * вместо кнопок показывается индикатор и кнопка "Пауза" (по дополнению
+ * пользователя — прервать "Выполнить" можно в любой момент). Та же карточка
+ * обслуживает и задачу, оставшуюся активной без паузы (paused = false) —
+ * тогда просто не показывается пометка "на паузе", а кнопки остаются
+ * доступны. */
+@Composable
+private fun TaskConfirmationCard(
+    task: TaskSummary,
+    isRunning: Boolean,
+    runIsAutoPause: Boolean,
+    onOpenTask: (String) -> Unit,
+    onContinueStep: (String) -> Unit,
+    onExecute: (String) -> Unit,
+    onPause: (String) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+            Text(
+                text = "Задача: ${task.title}",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable { onOpenTask(task.id) },
+            )
+            Spacer(Modifier.height(4.dp))
+            if (isRunning) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (runIsAutoPause) "Выполняется следующий этап…" else "Менеджер задач выполняет задачу…",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = { onPause(task.id) }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.Pause, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Пауза")
+                }
+            } else {
+                val nextStage = task.next_state_display_name
+                Text(
+                    text = if (nextStage != null) {
+                        "Следующий этап: $nextStage. Продолжить выполнение?"
+                    } else {
+                        "Дальнейшее продвижение недоступно — этап: ${task.state_display_name}."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(
+                        onClick = { onContinueStep(task.id) },
+                        enabled = nextStage != null,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = ButtonDefaults.ContentPadding,
+                    ) { Text("Продолжить") }
+                    Button(
+                        onClick = { onExecute(task.id) },
+                        enabled = nextStage != null,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = ButtonDefaults.ContentPadding,
+                    ) { Text("Выполнить") }
+                }
             }
         }
     }
@@ -773,6 +973,7 @@ private fun MessageItem(
     onLongClick: () -> Unit,
     onClick: () -> Unit,
     onToggleFacts: () -> Unit,
+    onOpenTask: (String) -> Unit,
 ) {
     val alignment = when (message.role) {
         "user" -> Alignment.CenterEnd
@@ -822,6 +1023,11 @@ private fun MessageItem(
                     horizontalAlignment = Alignment.Start,
                 ) {
                     MessageBadges(message, onToggleFacts)
+                    // Переходы состояний задач, применённые за этот ответ —
+                    // с явным указанием, к какой именно задаче они относятся
+                    // (пункт 7 замечаний: в чате может быть несколько
+                    // параллельных открытых задач, неоднозначность недопустима).
+                    TaskEventChips(message, onOpenTask)
                     Bubble(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         selected = selected,
@@ -912,14 +1118,20 @@ private fun MessageItem(
     }
 }
 
-/** Ряд бейджей над сообщением: "Summary" (Доработка 9), "Ветка N" (свой цвет
- * на ветку) и "Факты" (кликабелен — раскрывает/сворачивает блок фактов
- * под сообщением, аналогично блоку рассуждений). */
+/** Ряд бейджей над сообщением: "Менеджер задач" (обновление "Дня 13" — см.
+ * `Message.is_task_manager_step`, чтобы не создавалось впечатление, будто
+ * что-то потерялось из истории — перед таким сообщением нет реплики
+ * пользователя), "Summary" (Доработка 9), "Ветка N" (свой цвет на ветку) и
+ * "Факты" (кликабелен — раскрывает/сворачивает блок фактов под сообщением,
+ * аналогично блоку рассуждений). */
 @Composable
 private fun MessageBadges(message: Message, onToggleFacts: () -> Unit) {
-    val hasBadges = message.is_summary || message.branch > 0 || !message.facts.isNullOrBlank()
+    val hasBadges = message.is_task_manager_step || message.is_summary || message.branch > 0 || !message.facts.isNullOrBlank()
     if (!hasBadges) return
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 2.dp)) {
+        if (message.is_task_manager_step) {
+            SmallBadge(text = "Менеджер задач", color = MaterialTheme.colorScheme.tertiaryContainer)
+        }
         if (message.is_summary) {
             SmallBadge(text = "Summary", color = MaterialTheme.colorScheme.tertiaryContainer)
         }
@@ -928,6 +1140,39 @@ private fun MessageBadges(message: Message, onToggleFacts: () -> Unit) {
         }
         if (!message.facts.isNullOrBlank()) {
             SmallBadge(text = "Факты", color = MaterialTheme.colorScheme.secondaryContainer, onClick = onToggleFacts)
+        }
+    }
+}
+
+/** JSON-декодер `Message.task_events` — отдельный от общего клиента
+ * AgentsCoreApiClient, т.к. это чисто UI-парсинг уже полученного поля, а не
+ * сетевой вызов. */
+private val taskEventsJson = Json { ignoreUnknownKeys = true }
+
+/** Переходы состояний задач за ЭТОТ ответ (пункт 7 замечаний) — по одному
+ * чипу на переход, с явным указанием названия задачи, чтобы не путать
+ * несколько параллельных открытых задач одного чата. Клик — переход на
+ * детали именно этой задачи. */
+@Composable
+private fun TaskEventChips(message: Message, onOpenTask: (String) -> Unit) {
+    val raw = message.task_events
+    if (raw.isNullOrBlank()) return
+    val events = remember(raw) {
+        runCatching { taskEventsJson.decodeFromString(ListSerializer(TaskEvent.serializer()), raw) }.getOrDefault(emptyList())
+    }
+    if (events.isEmpty()) return
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 2.dp)) {
+        events.forEach { event ->
+            val transition = if (event.from_state_display_name != null) {
+                "${event.from_state_display_name} → ${event.to_state_display_name}"
+            } else {
+                "начало → ${event.to_state_display_name}"
+            }
+            SmallBadge(
+                text = "«${event.task_title}»: $transition",
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                onClick = { onOpenTask(event.task_id) },
+            )
         }
     }
 }

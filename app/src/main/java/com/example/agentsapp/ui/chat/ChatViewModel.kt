@@ -11,6 +11,8 @@ import com.example.agentsapp.data.remote.ChatStats
 import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.Settings
+import com.example.agentsapp.data.remote.TaskManagerStepEvent
+import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.repository.AgentsCoreRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -69,6 +71,9 @@ data class ChatUiState(
      * (`Chat.active_profile_id`, ищется по каталогу профилей) — null, если
      * профиль не подключён. Для бейджа "Профиль" на экране чата. */
     val activeProfileName: String? = null,
+    /** Выбран ли для этого чата хотя бы один инвариант (`Chat.invariant_ids`)
+     * — отдельного тумблера-настройки больше нет, см. `SettingsSummary`. */
+    val hasInvariants: Boolean = false,
     val stats: ChatStats? = null,
     /** Общее число сообщений в чате (все ветки, а не только видимая) — для
      * заголовка "Чат N (M сообщений)" в шапке экрана. */
@@ -99,11 +104,29 @@ data class ChatUiState(
     val showFactsPanel: Boolean = false,
     /** JSON фактов из последнего сообщения, под которым они сохранены. */
     val latestFacts: String? = null,
+    /** Открытые (активные + на паузе) задачи этого чата — для ссылки-строки
+     * перед перепиской (пункт 4 замечаний: НЕ бэдж, отдельная кликабельная
+     * строка). Пусто, если `task_tracking_enabled` выключена у чата — тогда
+     * строка вообще не рисуется (см. ChatScreen). */
+    val openTasks: List<TaskSummary> = emptyList(),
+    /** Id задачи, для которой сейчас выполняется шаг(и) "Менеджера задач"
+     * (см. [ChatViewModel.startTaskManagerRun]) — не null, пока идёт вызов
+     * модели; используется, чтобы показать индикатор в карточке
+     * подтверждения задачи (см. [TaskConfirmationCard] в ChatScreen.kt) и
+     * заблокировать ввод (как при обычной отправке). */
+    val taskManagerActiveTaskId: String? = null,
+    /** true — идёт именно одиночный шаг ("Продолжить", после которого сервер
+     * сам снова ставит задачу на паузу), false — непрерывное выполнение
+     * ("Выполнить", до состояния done); используется только вместе с
+     * [taskManagerActiveTaskId] != null, чтобы решить, показывать ли кнопку
+     * "Пауза" для прерывания (по дополнению пользователя: прервать можно в
+     * любой момент, пока "Выполнить" ещё работает). */
+    val taskManagerAutoPause: Boolean = true,
     /** Разовое сообщение об ошибке для показа в Snackbar; сбрасывается после показа. */
     val errorMessage: String? = null,
 ) {
     val isSelectionMode: Boolean get() = selectedIds.isNotEmpty()
-    val isBusy: Boolean get() = isSending || isSummarizing
+    val isBusy: Boolean get() = isSending || isSummarizing || taskManagerActiveTaskId != null
 
     /** Кнопка суммаризации недоступна: нет сообщений, сервер сам считает
      * суммаризацию невозможной, или прямо сейчас идёт отправка/получение/суммаризация. */
@@ -139,6 +162,17 @@ class ChatViewModel(
     /** Debounce-корутина для переименования чата (замечание "inline
      * редактирование наименования чата"). */
     private var renameJob: Job? = null
+
+    /** Корутина текущего шага/цикла "Менеджера задач" (см.
+     * [startTaskManagerRun]) — не более одной одновременно (пункт 2.6
+     * обновлённой концепции: в рамках одного чата обычно ведётся не более
+     * одной активной задачи одновременно). Отмена этой корутины (кнопка
+     * "Пауза" — см. [pauseTask]) закрывает и текущее
+     * SSE-соединение, если шаг в этот момент как раз стримится (см.
+     * `AgentsCoreApiClient.stepTaskManager`) — настоящей отмены генерации на
+     * сервере нет (как и у обычной отправки), но клиент прекращает ждать и
+     * дальше цикл не продолжает. */
+    private var taskManagerJob: Job? = null
 
     init {
         load()
@@ -198,6 +232,7 @@ class ChatViewModel(
             null
         }
         val modelInfo = models.find { it.id == loadedChat.settings.model }
+        val openTasks = loadOpenTasksIfEnabled(loadedChat.settings)
         _state.update {
             it.copy(
                 chatTitle = loadedChat.title,
@@ -211,14 +246,26 @@ class ChatViewModel(
                 autosummaryByTokens = loadedChat.settings.autosummary_by_tokens,
                 settings = loadedChat.settings,
                 activeProfileName = profileNameOf(profiles, loadedChat.active_profile_id),
+                hasInvariants = loadedChat.invariant_ids.isNotEmpty(),
                 stats = loadedChat.stats,
                 messageCount = allMessages.size,
                 messages = visibleMessages(allMessages, it.selectedBranch),
                 branches = branches ?: it.branches,
                 latestFacts = latestFactsFrom(allMessages) ?: it.latestFacts,
+                openTasks = openTasks,
             )
         }
     }
+
+    /** Задачи этого чата подгружаются, только если у чата включена настройка
+     * "Отслеживать задачи" — иначе задачи не существуют вовсе (пункт 4). Не
+     * прерывает загрузку экрана, если запрос списка задач не удался. */
+    private suspend fun loadOpenTasksIfEnabled(settings: Settings): List<TaskSummary> =
+        if (settings.task_tracking_enabled) {
+            runCatching { repository.listChatTasks(chatId) }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
 
     /** Заново запрашивает чат (для актуальной статистики токенов, под текущую
      * выбранную ветку) и список сообщений — вызывается после любого
@@ -230,6 +277,7 @@ class ChatViewModel(
             chat = loadedChat
             val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
             allMessages = repository.listMessages(chatId)
+            val openTasks = loadOpenTasksIfEnabled(loadedChat.settings)
             _state.update {
                 it.copy(
                     contextStrategy = loadedChat.settings.context_strategy,
@@ -239,10 +287,12 @@ class ChatViewModel(
                     autosummaryByTokens = loadedChat.settings.autosummary_by_tokens,
                     settings = loadedChat.settings,
                     activeProfileName = profileNameOf(profiles, loadedChat.active_profile_id),
+                    hasInvariants = loadedChat.invariant_ids.isNotEmpty(),
                     stats = loadedChat.stats,
                     messageCount = allMessages.size,
                     messages = visibleMessages(allMessages, it.selectedBranch),
                     latestFacts = latestFactsFrom(allMessages) ?: it.latestFacts,
+                    openTasks = openTasks,
                 )
             }
         } catch (e: Exception) {
@@ -389,6 +439,127 @@ class ChatViewModel(
                     _state.update { it.copy(streamingDraft = null, errorMessage = event.message) }
                     refreshChatAndMessages()
                 }
+            }
+        }
+    }
+
+    // ---- "Менеджер задач" (редизайн, замечание пользователя) -----------------
+    //
+    // Новая концепция: при включённой у чата настройке "Отслеживать задачи"
+    // модель, прежде чем планировать/выполнять/проверять задачу, ОСТАНАВЛИВАЕТСЯ
+    // (сервер сам ставит задачу на паузу — см. `_handle_start_task`/
+    // `_handle_apply_task_action(auto_pause=True)` на бэкенде) и в чате под
+    // последним сообщением показывается карточка-подтверждение (см.
+    // [TaskConfirmationCard] в ChatScreen.kt): "Задача: …, следующий этап: ….
+    // Продолжить выполнение?" с тремя кнопками. Никакого автозапуска цикла
+    // здесь больше нет — каждое действие явное, по нажатию кнопки.
+
+    /** Кнопка "Продолжить" — один шаг (обращение к модели), после которого
+     * сервер сам снова ставит задачу на паузу (auto_pause=true) — цикл на
+     * клиенте не нужен, ровно один вызов. */
+    fun continueTaskStep(taskId: String) = startTaskManagerRun(taskId, autoPause = true)
+
+    /** Кнопка "Выполнить" — без остановок до состояния done: сервер продвигает
+     * задачу шагами (каждый шаг — отдельный вызов, обращение к модели),
+     * клиент вызывает эндпоинт в цикле, пока не придёт `should_continue =
+     * false`. Пользователь может прервать этот цикл в любой момент кнопкой
+     * "Пауза" (см. [pauseTask]) — по дополнению пользователя: "если … нажал
+     * 'Выполнить', он может в любой момент … нажать кнопку пауза". */
+    fun executeTaskUntilDone(taskId: String) = startTaskManagerRun(taskId, autoPause = false)
+
+    /** Общая реализация "Продолжить"/"Выполнить" — не более одного запущенного
+     * шага/цикла одновременно (пункт 2.6 концепции). [autoPause] = true —
+     * ровно один вызов [runOneTaskManagerStep], без учёта возвращённого
+     * `should_continue` (сервер и так сразу же самостоятельно ставит задачу на
+     * паузу); [autoPause] = false — цикл вызовов, пока сервер не вернёт
+     * `should_continue = false` (задача завершена, поставлена на паузу вручную
+     * во время шага, модели больше нечем её продвинуть, либо достигнут лимит
+     * `task_manager_max_steps`). */
+    private fun startTaskManagerRun(taskId: String, autoPause: Boolean) {
+        if (taskManagerJob?.isActive == true) return
+        taskManagerJob = viewModelScope.launch {
+            _state.update { it.copy(taskManagerActiveTaskId = taskId, taskManagerAutoPause = autoPause) }
+            try {
+                if (autoPause) {
+                    runOneTaskManagerStep(taskId, autoPause = true)
+                } else {
+                    var shouldContinue = true
+                    while (shouldContinue) {
+                        shouldContinue = runOneTaskManagerStep(taskId, autoPause = false)
+                    }
+                }
+            } finally {
+                _state.update { it.copy(taskManagerActiveTaskId = null) }
+            }
+        }
+    }
+
+    /** Один шаг — возвращает `true`, если цикл нужно продолжать (см.
+     * `should_continue` в ответе сервера; при [autoPause] = true результат не
+     * используется вызывающей стороной, см. [startTaskManagerRun]). Ошибка
+     * (в т.ч. сеть) молча останавливает шаг/цикл, но не считается критичной
+     * для экрана в целом — сообщение об ошибке показывается тем же способом,
+     * что и для обычной отправки. */
+    private suspend fun runOneTaskManagerStep(taskId: String, autoPause: Boolean): Boolean {
+        val statusText = if (autoPause) "Выполняется следующий этап задачи" else "Менеджер задач выполняет задачу"
+        var draft = StreamingDraft(status = statusText)
+        _state.update { it.copy(streamingDraft = draft) }
+        var shouldContinue = false
+        try {
+            repository.stepTaskManager(chatId, taskId, autoPause).collect { event ->
+                when (event) {
+                    is TaskManagerStepEvent.Status -> {
+                        draft = draft.copy(status = event.status)
+                        _state.update { it.copy(streamingDraft = draft) }
+                    }
+                    is TaskManagerStepEvent.Delta -> {
+                        draft = draft.copy(
+                            content = draft.content + event.content,
+                            reasoningContent = draft.reasoningContent + event.reasoningContent,
+                        )
+                        _state.update { it.copy(streamingDraft = draft) }
+                    }
+                    is TaskManagerStepEvent.Done -> {
+                        _state.update { it.copy(streamingDraft = null) }
+                        refreshChatAndMessages()
+                        shouldContinue = event.shouldContinue
+                    }
+                    is TaskManagerStepEvent.Error -> {
+                        _state.update { it.copy(streamingDraft = null, errorMessage = event.message) }
+                        refreshChatAndMessages()
+                        shouldContinue = false
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            _state.update { it.copy(streamingDraft = null, errorMessage = errorText(e)) }
+            shouldContinue = false
+        }
+        return shouldContinue
+    }
+
+    /** Кнопка "Пауза" — и в карточке-подтверждении (пока в этом чате прямо
+     * сейчас работает "Выполнить"), и дублирующая её по функционалу кнопка в
+     * списке/карточке задачи (замечание пользователя). Сначала обрывает
+     * текущий запущенный шаг/цикл для ЭТОЙ задачи, если он идёт именно в этом
+     * чате (отмена корутины закрывает и текущее SSE-соединение — см.
+     * комментарий у [taskManagerJob]; настоящей отмены генерации на сервере
+     * нет, но клиент прекращает ждать и дальше не продолжает), затем
+     * применяет единственное оставшееся ручное действие "pause", чтобы задача
+     * считалась приостановленной и на сервере (шаги с auto_pause=false сами
+     * паузу не ставят). */
+    fun pauseTask(taskId: String) {
+        if (state.value.taskManagerActiveTaskId == taskId) {
+            taskManagerJob?.cancel()
+            taskManagerJob = null
+            _state.update { it.copy(taskManagerActiveTaskId = null, streamingDraft = null) }
+        }
+        viewModelScope.launch {
+            try {
+                repository.applyTaskActionManually(taskId, "pause")
+                refreshChatAndMessages()
+            } catch (e: Exception) {
+                _state.update { it.copy(errorMessage = errorText(e)) }
             }
         }
     }

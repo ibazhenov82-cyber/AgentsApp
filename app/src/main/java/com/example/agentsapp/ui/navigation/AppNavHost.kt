@@ -18,6 +18,9 @@ import com.example.agentsapp.ui.ProfilesViewModelFactory
 import com.example.agentsapp.ui.SettingsViewModelFactory
 import com.example.agentsapp.ui.chat.ChatScreen
 import com.example.agentsapp.ui.chat.ChatViewModel
+import com.example.agentsapp.ui.InvariantsViewModelFactory
+import com.example.agentsapp.ui.invariants.InvariantsScreen
+import com.example.agentsapp.ui.invariants.InvariantsViewModel
 import com.example.agentsapp.ui.main.MainScreen
 import com.example.agentsapp.ui.main.MainViewModel
 import com.example.agentsapp.ui.memory.MemoryScreen
@@ -29,21 +32,34 @@ import com.example.agentsapp.ui.profiles.ProfilesViewModel
 import com.example.agentsapp.ui.settings.SettingsMode
 import com.example.agentsapp.ui.settings.SettingsScreen
 import com.example.agentsapp.ui.settings.SettingsViewModel
+import com.example.agentsapp.ui.TaskMachinesViewModelFactory
+import com.example.agentsapp.ui.taskmachines.TaskMachinesScreen
+import com.example.agentsapp.ui.taskmachines.TaskMachinesViewModel
+import com.example.agentsapp.ui.TaskDetailViewModelFactory
+import com.example.agentsapp.ui.tasks.TaskDetailScreen
+import com.example.agentsapp.ui.tasks.TaskDetailViewModel
 
 private object Routes {
     const val MAIN = "main"
     const val MODELS = "models"
     const val PROFILES = "profiles"
+    const val INVARIANTS = "invariants"
+    const val TASK_MACHINES = "taskMachines"
     const val DEFAULT_SETTINGS = "defaultSettings"
     const val AGENT_SETTINGS = "agentSettings/{agentId}"
     const val CHAT_SETTINGS = "chatSettings/{chatId}"
     const val CHAT = "chat/{chatId}"
     const val MEMORY = "memory/{chatId}"
+    // Id задачи глобально уникален на сервере (UUID) — отдельный chatId в
+    // маршруте не нужен, но экран читает `TaskDetail.chat_id` из самого
+    // ответа сервера, чтобы знать, куда вести "Список задач" (пункт 6).
+    const val TASK_DETAIL = "task/{taskId}"
 
     fun agentSettings(agentId: String) = "agentSettings/$agentId"
     fun chatSettings(chatId: String) = "chatSettings/$chatId"
     fun chat(chatId: String) = "chat/$chatId"
     fun memory(chatId: String) = "memory/$chatId"
+    fun taskDetail(taskId: String) = "task/$taskId"
 }
 
 @Composable
@@ -63,6 +79,9 @@ fun AppNavHost(
                 onOpenModels = { navController.navigate(Routes.MODELS) },
                 onOpenDefaultSettings = { navController.navigate(Routes.DEFAULT_SETTINGS) },
                 onOpenProfiles = { navController.navigate(Routes.PROFILES) },
+                onOpenInvariants = { navController.navigate(Routes.INVARIANTS) },
+                onOpenTaskMachines = { navController.navigate(Routes.TASK_MACHINES) },
+                onOpenTask = { taskId -> navController.navigate(Routes.taskDetail(taskId)) },
             )
         }
 
@@ -76,6 +95,18 @@ fun AppNavHost(
             val factory = remember { ProfilesViewModelFactory(container.repository) }
             val vm: ProfilesViewModel = viewModel(factory = factory)
             ProfilesScreen(viewModel = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.INVARIANTS) {
+            val factory = remember { InvariantsViewModelFactory(container.repository) }
+            val vm: InvariantsViewModel = viewModel(factory = factory)
+            InvariantsScreen(viewModel = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.TASK_MACHINES) {
+            val factory = remember { TaskMachinesViewModelFactory(container.repository) }
+            val vm: TaskMachinesViewModel = viewModel(factory = factory)
+            TaskMachinesScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
 
         composable(Routes.DEFAULT_SETTINGS) {
@@ -116,6 +147,10 @@ fun AppNavHost(
                 onBack = { navController.popBackStack() },
                 onOpenChatSettings = { navController.navigate(Routes.chatSettings(chatId)) },
                 onOpenMemory = { navController.navigate(Routes.memory(chatId)) },
+                onOpenTask = { taskId -> navController.navigate(Routes.taskDetail(taskId)) },
+                // Несколько параллельных открытых задач (пункт 7) — ведём на
+                // список задач этого чата (вкладка "Задачи" экрана "Память").
+                onOpenTaskList = { navController.navigate(Routes.memory(chatId)) },
             )
         }
 
@@ -126,7 +161,29 @@ fun AppNavHost(
             val chatId = backStackEntry.arguments?.getString("chatId").orEmpty()
             val factory = remember(chatId) { MemoryViewModelFactory(chatId, container.repository) }
             val vm: MemoryViewModel = viewModel(key = "memory-$chatId", factory = factory)
-            MemoryScreen(viewModel = vm, onBack = { navController.popBackStack() })
+            MemoryScreen(
+                viewModel = vm,
+                onBack = { navController.popBackStack() },
+                onOpenTask = { taskId -> navController.navigate(Routes.taskDetail(taskId)) },
+            )
+        }
+
+        composable(
+            route = Routes.TASK_DETAIL,
+            arguments = listOf(navArgument("taskId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val taskId = backStackEntry.arguments?.getString("taskId").orEmpty()
+            val factory = remember(taskId) { TaskDetailViewModelFactory(taskId, container.repository) }
+            val vm: TaskDetailViewModel = viewModel(key = "task-$taskId", factory = factory)
+            TaskDetailScreen(
+                viewModel = vm,
+                onBack = { navController.popBackStack() },
+                // Переход к списку задач (пункт 6) — НЕЗАВИСИМО от системной
+                // кнопки "назад": ведёт на вкладку "Задачи" родительского чата
+                // задачи, даже если на детали задачи попали из агрегированного
+                // блока на главном экране, а не из самого чата.
+                onOpenTaskList = { chatId -> navController.navigate(Routes.memory(chatId)) },
+            )
         }
     }
 }
