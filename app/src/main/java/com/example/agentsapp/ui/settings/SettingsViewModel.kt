@@ -6,6 +6,8 @@ import com.example.agentsapp.data.remote.AgentApiException
 import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.DefaultSettings
 import com.example.agentsapp.data.remote.Invariant
+import com.example.agentsapp.data.remote.McpConnectionSettings
+import com.example.agentsapp.data.remote.McpToolDescription
 import com.example.agentsapp.data.remote.ModelInfo
 import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.ServerConnectionSettings
@@ -17,12 +19,21 @@ import com.example.agentsapp.data.remote.jsonValueOf
 import com.example.agentsapp.data.remote.readDefaultSettingsField
 import com.example.agentsapp.data.remote.readSettingsField
 import com.example.agentsapp.data.repository.AgentsCoreRepository
+import com.example.agentsapp.data.repository.McpRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 
 /** Режим экрана настроек: настройки по умолчанию, настройки конкретного
  * агента или настройки конкретного чата — все три используют один и тот же
@@ -71,6 +82,20 @@ data class SettingsUiState(
     val showInvariantsPicker: Boolean = false,
     val availableInvariants: List<Invariant> = emptyList(),
     val selectedInvariantIds: List<String> = emptyList(),
+    /** Адрес отдельного MCP-сервера (новое ТЗ) — второе поле блока
+     * "Соединение с сервером", показывается только в режиме [SettingsMode.Default],
+     * рядом с адресом AgentsCore, но сохраняется в [McpConnectionSettings]. */
+    val mcpConnectionUrl: String = "",
+    /** Режим "Выбрать из доступных" для поля "Список функций в формате OpenAI"
+     * (tools_json) — показывается только в режимах [SettingsMode.Agent]/[SettingsMode.Chat],
+     * рядом с полем GROUP_TOOLS. Переключение на ручной ввод JSON и обратно
+     * НЕ объединяет изменения — список отмеченных инструментов при входе в
+     * режим строится заново по содержимому текущего tools_json (см.
+     * [parseSelectedMcpToolNames]), а всё остальное содержимое JSON вне
+     * распознанных функций при последующем изменении из списка теряется. */
+    val toolsPickerMode: Boolean = false,
+    val availableMcpTools: List<McpToolDescription> = emptyList(),
+    val selectedMcpToolNames: Set<String> = emptySet(),
     val errorMessage: String? = null,
 )
 
@@ -78,7 +103,11 @@ class SettingsViewModel(
     private val mode: SettingsMode,
     private val repository: AgentsCoreRepository,
     private val connectionSettings: ServerConnectionSettings,
+    private val mcpConnectionSettings: McpConnectionSettings,
+    private val mcpRepository: McpRepository,
 ) : ViewModel() {
+
+    private val toolsJson = Json { ignoreUnknownKeys = true; prettyPrint = true }
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
@@ -98,10 +127,23 @@ class SettingsViewModel(
             title = title, fields = fields, modelEditable = modelEditable, showResetButton = showReset,
             showConnectionBlock = mode is SettingsMode.Default,
             connectionUrl = if (mode is SettingsMode.Default) connectionSettings.currentBaseUrl() else "",
+            mcpConnectionUrl = if (mode is SettingsMode.Default) mcpConnectionSettings.currentBaseUrl() else "",
             showProfilePicker = mode is SettingsMode.Agent || mode is SettingsMode.Chat,
             showInvariantsPicker = mode is SettingsMode.Agent || mode is SettingsMode.Chat,
         )
         loadAll()
+        if (mode is SettingsMode.Agent || mode is SettingsMode.Chat) {
+            viewModelScope.launch {
+                // Только инструменты, которые модель может реально ВЫЗВАТЬ через
+                // MCP-протокол: `schedulable == true` записи `/api/tools`
+                // (git_pull/http_fetch/git_host_poll) — это виды ПЕРИОДИЧЕСКИХ
+                // задач, а не MCP-инструменты; выбранные здесь, они давали
+                // модели заведомо недоступную функцию ("unknown tool").
+                val tools = runCatching { mcpRepository.listTools() }.getOrDefault(emptyList())
+                    .filter { !it.schedulable }
+                _state.value = _state.value.copy(availableMcpTools = tools)
+            }
+        }
     }
 
     /** Небольшая замена data class с 4 полями, чтобы не заводить отдельный тип верхнего уровня. */
@@ -258,6 +300,47 @@ class SettingsViewModel(
         }
     }
 
+    /** Адрес отдельного MCP-сервера — тот же debounce-приём, что и у адреса
+     * AgentsCore выше, но сохраняется в [McpConnectionSettings] (независимый
+     * сервис, свой адрес, см. AppContainer). */
+    fun onMcpConnectionUrlChange(url: String) {
+        _state.value = _state.value.copy(mcpConnectionUrl = url)
+        debounceJobs["__mcp_connection_url__"]?.cancel()
+        debounceJobs["__mcp_connection_url__"] = viewModelScope.launch {
+            delay(DEBOUNCE_MS)
+            mcpConnectionSettings.setBaseUrl(url)
+        }
+    }
+
+    // ---- Режим "Выбрать из доступных" для tools_json (Agent/Chat) --------
+
+    /** Включение режима списка — набор отмеченных функций строится заново по
+     * ТЕКУЩЕМУ содержимому tools_json (сопоставление по имени функции с
+     * инструментами MCP-сервера); переключение обратно на JSON ничего не
+     * меняет в самом tools_json — это тот же текст, что и был. */
+    fun onToolsPickerModeChange(enabled: Boolean) {
+        val selected = if (enabled) {
+            parseSelectedMcpToolNames(_state.value.values["tools_json"] as? String ?: "")
+        } else {
+            _state.value.selectedMcpToolNames
+        }
+        _state.value = _state.value.copy(toolsPickerMode = enabled, selectedMcpToolNames = selected)
+    }
+
+    /** Отметка/снятие инструмента в списке — tools_json полностью
+     * перестраивается из текущего набора отмеченных инструментов (без
+     * объединения с тем, что было в JSON до входа в режим списка). */
+    fun onMcpToolToggle(tool: McpToolDescription) {
+        val updated = if (tool.name in _state.value.selectedMcpToolNames) {
+            _state.value.selectedMcpToolNames - tool.name
+        } else {
+            _state.value.selectedMcpToolNames + tool.name
+        }
+        val rebuilt = buildToolsJson(_state.value.availableMcpTools, updated)
+        _state.value = _state.value.copy(selectedMcpToolNames = updated)
+        onDebouncedChange("tools_json", rebuilt)
+    }
+
     /** Проверка соединения по кнопке рядом с полем ввода адреса: сначала
      * гарантированно сохраняет введённый адрес (отменяя отложенное
      * сохранение и применяя его немедленно), затем пробует `GET /health`. */
@@ -367,5 +450,51 @@ class SettingsViewModel(
         is AgentUnreachableException -> "Не удалось подключиться к серверу AgentsCore. Проверьте адрес сервера и сеть."
         is AgentApiException -> e.apiMessage ?: "Сервер вернул ошибку (код ${e.statusCode})."
         else -> e.message ?: "Неизвестная ошибка."
+    }
+
+    /** Разбирает текущий tools_json (массив объектов вида `{"type":"function",
+     * "function":{"name":...}}`, формат OpenAI) и возвращает имена, которые
+     * совпадают с именами инструментов MCP-сервера — используется только для
+     * предзаполнения списка при ВХОДЕ в режим "Выбрать из доступных" (см.
+     * [onToolsPickerModeChange]); произвольный ручной JSON без узнаваемых
+     * функций даёт пустой набор, без ошибок. */
+    private fun parseSelectedMcpToolNames(rawToolsJson: String): Set<String> {
+        if (rawToolsJson.isBlank()) return emptySet()
+        return runCatching {
+            val array = toolsJson.parseToJsonElement(rawToolsJson) as? JsonArray ?: return emptySet()
+            array.mapNotNull { entry ->
+                val obj = entry as? JsonObject ?: return@mapNotNull null
+                val fn = obj["function"]?.jsonObject ?: obj
+                fn["name"]?.jsonPrimitive?.content
+            }.toSet()
+        }.getOrDefault(emptySet())
+    }
+
+    /** Строит tools_json (формат OpenAI: массив `{"type":"function","function":
+     * {"name":...,"description":...,"parameters":...}}`) из выбранных
+     * инструментов MCP-сервера — ПОЛНАЯ замена содержимого поля, без
+     * объединения с тем, что было в JSON раньше (см. класс-докстринг
+     * [SettingsUiState.toolsPickerMode]). */
+    private fun buildToolsJson(available: List<McpToolDescription>, selected: Set<String>): String {
+        val chosen = available.filter { it.name in selected }
+        if (chosen.isEmpty()) return ""
+        val array = buildJsonArray {
+            chosen.forEach { tool ->
+                add(
+                    buildJsonObject {
+                        put("type", "function")
+                        put(
+                            "function",
+                            buildJsonObject {
+                                put("name", tool.name)
+                                put("description", tool.description)
+                                put("parameters", tool.parameters)
+                            },
+                        )
+                    },
+                )
+            }
+        }
+        return toolsJson.encodeToString(JsonArray.serializer(), array)
     }
 }

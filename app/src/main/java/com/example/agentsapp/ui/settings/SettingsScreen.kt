@@ -1,5 +1,6 @@
 package com.example.agentsapp.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +63,7 @@ import com.example.agentsapp.data.remote.Invariant
 import com.example.agentsapp.data.remote.ModelInfo
 import com.example.agentsapp.data.remote.SETTINGS_GROUP_ORDER
 import com.example.agentsapp.data.remote.SettingsFieldDef
+import com.example.agentsapp.ui.common.toolTitle
 
 /** Строка внутри списка настроек — либо заголовок группы, либо конкретное поле. */
 private sealed class SettingsRow {
@@ -177,6 +179,17 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         GroupHeaderText(SETTINGS_GROUP_ORDER.first())
                         ConnectionField(state = state, viewModel = viewModel)
+                        // Адрес отдельного MCP-сервера (новое ТЗ, третий компонент) —
+                        // второе, независимое поле в том же блоке: свой сервис, свой
+                        // адрес (см. McpConnectionSettings), без проверки соединения —
+                        // статус MCP-сервера виден прямо на экране "MCP".
+                        OutlinedTextField(
+                            value = state.mcpConnectionUrl,
+                            onValueChange = viewModel::onMcpConnectionUrlChange,
+                            label = { Text("Адрес MCP-сервера") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
                 item { HorizontalDivider() }
@@ -223,17 +236,25 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                         } else {
                             true
                         }
-                        FieldEditor(
-                            def = row.def,
-                            value = state.values[row.def.sysName],
-                            enabled = fieldEnabled,
-                            modelEditable = state.modelEditable,
-                            models = state.models,
-                            onImmediateChange = { v -> viewModel.onImmediateChange(row.def.sysName, v) },
-                            onDebouncedChange = { v -> viewModel.onDebouncedChange(row.def.sysName, v) },
-                            onSliderDrag = { v -> viewModel.onSliderDrag(row.def.sysName, v) },
-                            onSliderChangeFinished = { viewModel.onSliderChangeFinished(row.def.sysName) },
-                        )
+                        // Поле "Список функций в формате OpenAI" (tools_json) — отдельный
+                        // редактор с переключателем "JSON"/"Выбрать из доступных"
+                        // (новое ТЗ, интеграция с MCP-сервером), остальные типы полей —
+                        // как раньше, через generic FieldEditor.
+                        if (row.def.sysName == "tools_json") {
+                            ToolsJsonFieldEditor(def = row.def, state = state, viewModel = viewModel)
+                        } else {
+                            FieldEditor(
+                                def = row.def,
+                                value = state.values[row.def.sysName],
+                                enabled = fieldEnabled,
+                                modelEditable = state.modelEditable,
+                                models = state.models,
+                                onImmediateChange = { v -> viewModel.onImmediateChange(row.def.sysName, v) },
+                                onDebouncedChange = { v -> viewModel.onDebouncedChange(row.def.sysName, v) },
+                                onSliderDrag = { v -> viewModel.onSliderDrag(row.def.sysName, v) },
+                                onSliderChangeFinished = { viewModel.onSliderChangeFinished(row.def.sysName) },
+                            )
+                        }
                     }
                 }
             }
@@ -286,6 +307,78 @@ private fun ConnectionField(state: SettingsUiState, viewModel: SettingsViewModel
                     style = MaterialTheme.typography.bodySmall,
                     color = if (state.connectionCheckSucceeded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                 )
+            }
+        }
+    }
+}
+
+/** Редактор поля "Список функций в формате OpenAI" (tools_json) — переключатель
+ * "JSON" / "Выбрать из доступных" (новое ТЗ, интеграция с MCP-сервером):
+ * в режиме JSON — прежний, ничем не ограниченный текстовый ввод; в режиме
+ * списка — чекбоксы по инструментам MCP-сервера (`GET /api/tools`), tools_json
+ * при этом ПОЛНОСТЬЮ перестраивается из отмеченного набора (см. докстринг
+ * [SettingsUiState.toolsPickerMode] — переключение туда и обратно не
+ * объединяет изменения). */
+@Composable
+private fun ToolsJsonFieldEditor(def: SettingsFieldDef, state: SettingsUiState, viewModel: SettingsViewModel) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(def.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            Text(
+                text = if (state.toolsPickerMode) "Выбрать из доступных" else "JSON",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Switch(checked = state.toolsPickerMode, onCheckedChange = viewModel::onToolsPickerModeChange)
+        }
+
+        if (!state.toolsPickerMode) {
+            OutlinedTextField(
+                value = state.values[def.sysName] as? String ?: "",
+                onValueChange = { viewModel.onDebouncedChange(def.sysName, it) },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 4,
+                maxLines = 16,
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+        } else {
+            Text(
+                "Переключение между режимами не объединяет изменения: список ниже построен по текущему " +
+                    "содержимому JSON, а при отметке/снятии функции JSON перестраивается заново целиком.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (state.availableMcpTools.isEmpty()) {
+                Text(
+                    "Нет доступных инструментов — проверьте адрес MCP-сервера в блоке \"Соединение с сервером\" выше.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    state.availableMcpTools.forEach { tool ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable { viewModel.onMcpToolToggle(tool) },
+                        ) {
+                            androidx.compose.material3.Checkbox(
+                                checked = tool.name in state.selectedMcpToolNames,
+                                onCheckedChange = { viewModel.onMcpToolToggle(tool) },
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    toolTitle(tool.name, tool.title) ?: tool.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    tool.name,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

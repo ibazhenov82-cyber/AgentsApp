@@ -10,11 +10,15 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.agentsapp.AppContainer
+import com.example.agentsapp.ui.AddScheduledToolViewModelFactory
 import com.example.agentsapp.ui.ChatViewModelFactory
+import com.example.agentsapp.ui.GitHostsViewModelFactory
 import com.example.agentsapp.ui.MainViewModelFactory
+import com.example.agentsapp.ui.McpViewModelFactory
 import com.example.agentsapp.ui.MemoryViewModelFactory
 import com.example.agentsapp.ui.ModelsViewModelFactory
 import com.example.agentsapp.ui.ProfilesViewModelFactory
+import com.example.agentsapp.ui.ScheduledToolRunsViewModelFactory
 import com.example.agentsapp.ui.SettingsViewModelFactory
 import com.example.agentsapp.ui.chat.ChatScreen
 import com.example.agentsapp.ui.chat.ChatViewModel
@@ -23,6 +27,14 @@ import com.example.agentsapp.ui.invariants.InvariantsScreen
 import com.example.agentsapp.ui.invariants.InvariantsViewModel
 import com.example.agentsapp.ui.main.MainScreen
 import com.example.agentsapp.ui.main.MainViewModel
+import com.example.agentsapp.ui.mcp.AddScheduledToolScreen
+import com.example.agentsapp.ui.mcp.AddScheduledToolViewModel
+import com.example.agentsapp.ui.mcp.GitHostsScreen
+import com.example.agentsapp.ui.mcp.GitHostsViewModel
+import com.example.agentsapp.ui.mcp.McpScreen
+import com.example.agentsapp.ui.mcp.McpViewModel
+import com.example.agentsapp.ui.mcp.ScheduledToolRunsScreen
+import com.example.agentsapp.ui.mcp.ScheduledToolRunsViewModel
 import com.example.agentsapp.ui.memory.MemoryScreen
 import com.example.agentsapp.ui.memory.MemoryViewModel
 import com.example.agentsapp.ui.models.ModelsScreen
@@ -38,6 +50,8 @@ import com.example.agentsapp.ui.taskmachines.TaskMachinesViewModel
 import com.example.agentsapp.ui.TaskDetailViewModelFactory
 import com.example.agentsapp.ui.tasks.TaskDetailScreen
 import com.example.agentsapp.ui.tasks.TaskDetailViewModel
+import java.net.URLDecoder
+import java.net.URLEncoder
 
 private object Routes {
     const val MAIN = "main"
@@ -55,11 +69,20 @@ private object Routes {
     // ответа сервера, чтобы знать, куда вести "Список задач" (пункт 6).
     const val TASK_DETAIL = "task/{taskId}"
 
+    // Отдельный MCP-сервер (новое ТЗ, третий компонент) — свой маленький
+    // под-граф навигации, независимый от остальных маршрутов выше.
+    const val MCP = "mcp"
+    const val MCP_ADD_TASK = "mcp/addTask"
+    const val GIT_HOSTS = "mcp/gitHosts"
+    const val MCP_TASK_RUNS = "mcp/tasks/{toolId}/runs?name={toolName}"
+
     fun agentSettings(agentId: String) = "agentSettings/$agentId"
     fun chatSettings(chatId: String) = "chatSettings/$chatId"
     fun chat(chatId: String) = "chat/$chatId"
     fun memory(chatId: String) = "memory/$chatId"
     fun taskDetail(taskId: String) = "task/$taskId"
+    fun mcpTaskRuns(toolId: String, toolName: String) =
+        "mcp/tasks/$toolId/runs?name=${URLEncoder.encode(toolName, "UTF-8")}"
 }
 
 @Composable
@@ -82,6 +105,7 @@ fun AppNavHost(
                 onOpenInvariants = { navController.navigate(Routes.INVARIANTS) },
                 onOpenTaskMachines = { navController.navigate(Routes.TASK_MACHINES) },
                 onOpenTask = { taskId -> navController.navigate(Routes.taskDetail(taskId)) },
+                onOpenMcp = { navController.navigate(Routes.MCP) },
             )
         }
 
@@ -110,7 +134,7 @@ fun AppNavHost(
         }
 
         composable(Routes.DEFAULT_SETTINGS) {
-            val factory = remember { SettingsViewModelFactory(SettingsMode.Default, container.repository, container.connectionSettings) }
+            val factory = remember { SettingsViewModelFactory(SettingsMode.Default, container.repository, container.connectionSettings, container.mcpConnectionSettings, container.mcpRepository) }
             val vm: SettingsViewModel = viewModel(key = "defaultSettings", factory = factory)
             SettingsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
@@ -120,7 +144,7 @@ fun AppNavHost(
             arguments = listOf(navArgument("agentId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val agentId = backStackEntry.arguments?.getString("agentId").orEmpty()
-            val factory = remember(agentId) { SettingsViewModelFactory(SettingsMode.Agent(agentId), container.repository, container.connectionSettings) }
+            val factory = remember(agentId) { SettingsViewModelFactory(SettingsMode.Agent(agentId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.mcpRepository) }
             val vm: SettingsViewModel = viewModel(key = "agentSettings-$agentId", factory = factory)
             SettingsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
@@ -130,7 +154,7 @@ fun AppNavHost(
             arguments = listOf(navArgument("chatId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val chatId = backStackEntry.arguments?.getString("chatId").orEmpty()
-            val factory = remember(chatId) { SettingsViewModelFactory(SettingsMode.Chat(chatId), container.repository, container.connectionSettings) }
+            val factory = remember(chatId) { SettingsViewModelFactory(SettingsMode.Chat(chatId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.mcpRepository) }
             val vm: SettingsViewModel = viewModel(key = "chatSettings-$chatId", factory = factory)
             SettingsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
@@ -184,6 +208,51 @@ fun AppNavHost(
                 // блока на главном экране, а не из самого чата.
                 onOpenTaskList = { chatId -> navController.navigate(Routes.memory(chatId)) },
             )
+        }
+
+        // ---- Отдельный MCP-сервер (новое ТЗ, третий компонент) ----
+
+        composable(Routes.MCP) {
+            val factory = remember { McpViewModelFactory(container.mcpRepository) }
+            val vm: McpViewModel = viewModel(factory = factory)
+            McpScreen(
+                viewModel = vm,
+                onBack = { navController.popBackStack() },
+                onOpenGitHosts = { navController.navigate(Routes.GIT_HOSTS) },
+                onOpenAddTask = { navController.navigate(Routes.MCP_ADD_TASK) },
+                onOpenRuns = { toolId, toolName -> navController.navigate(Routes.mcpTaskRuns(toolId, toolName)) },
+            )
+        }
+
+        composable(Routes.MCP_ADD_TASK) {
+            val factory = remember { AddScheduledToolViewModelFactory(container.mcpRepository) }
+            val vm: AddScheduledToolViewModel = viewModel(factory = factory)
+            AddScheduledToolScreen(
+                viewModel = vm,
+                onBack = { navController.popBackStack() },
+                onCreated = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.GIT_HOSTS) {
+            val factory = remember { GitHostsViewModelFactory(container.mcpRepository) }
+            val vm: GitHostsViewModel = viewModel(factory = factory)
+            GitHostsScreen(viewModel = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route = Routes.MCP_TASK_RUNS,
+            arguments = listOf(
+                navArgument("toolId") { type = NavType.StringType },
+                navArgument("toolName") { type = NavType.StringType; defaultValue = "" },
+            ),
+        ) { backStackEntry ->
+            val toolId = backStackEntry.arguments?.getString("toolId").orEmpty()
+            val toolName = backStackEntry.arguments?.getString("toolName").orEmpty()
+                .let { runCatching { URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }
+            val factory = remember(toolId) { ScheduledToolRunsViewModelFactory(toolId, container.mcpRepository) }
+            val vm: ScheduledToolRunsViewModel = viewModel(key = "mcpRuns-$toolId", factory = factory)
+            ScheduledToolRunsScreen(viewModel = vm, toolName = toolName, onBack = { navController.popBackStack() })
         }
     }
 }

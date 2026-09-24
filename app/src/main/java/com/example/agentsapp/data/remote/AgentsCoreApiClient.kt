@@ -479,6 +479,12 @@ class AgentsCoreApiClient(
                 content = obj["content"].stringOrNull().orEmpty(),
                 reasoningContent = obj["reasoning_content"].stringOrNull().orEmpty(),
             )
+            "mcp_call" -> TaskManagerStepEvent.McpCall(
+                name = obj["name"].stringOrNull().orEmpty(),
+                status = obj["status"].stringOrNull().orEmpty(),
+                ok = (obj["ok"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull(),
+                error = obj["error"].stringOrNull(),
+            )
             "done" -> obj["message"]?.let {
                 runCatching { json.decodeFromJsonElement(Message.serializer(), it) }.getOrNull()
             }?.let {
@@ -500,6 +506,12 @@ class AgentsCoreApiClient(
             "delta" -> AgentStreamEvent.Delta(
                 content = obj["content"].stringOrNull().orEmpty(),
                 reasoningContent = obj["reasoning_content"].stringOrNull().orEmpty(),
+            )
+            "mcp_call" -> AgentStreamEvent.McpCall(
+                name = obj["name"].stringOrNull().orEmpty(),
+                status = obj["status"].stringOrNull().orEmpty(),
+                ok = (obj["ok"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull(),
+                error = obj["error"].stringOrNull(),
             )
             "done" -> obj["message"]?.let {
                 runCatching { json.decodeFromJsonElement(Message.serializer(), it) }.getOrNull()

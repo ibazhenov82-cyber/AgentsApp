@@ -18,6 +18,11 @@ import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.ui.theme.BadgeChatBorder
 import com.example.agentsapp.ui.theme.BadgeChatBorderAndText
 import com.example.agentsapp.ui.theme.BadgeChatFill
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * Единая сводка настроек ([Settings]) агента или чата — один ряд бейджей, в
@@ -26,8 +31,8 @@ import com.example.agentsapp.ui.theme.BadgeChatFill
  * потоковые ответы → рассуждения → уровень рассуждений → максимальное число
  * токенов → ответ в JSON → стоп-последовательности → автоматическая
  * суммаризация → стратегия управления контекстом → сохранение памяти
- * агентом (с перечислением включённых типов памяти) → профиль (сразу справа
- * от бейджа памяти, в этом же ряду, а не отдельным блоком). Все бейджи —
+ * агентом (с перечислением включённых типов памяти) → задачи → инварианты →
+ * инструменты → профиль (в этом же ряду, а не отдельным блоком). Все бейджи —
  * одного вида (по замечанию пользователя): заливка — цвет пузыря сообщения
  * пользователя в чате ([BadgeChatFill]), обводка и текст — тёмный, близкий к
  * чёрному вариант того же тона ([BadgeChatBorderAndText]).
@@ -182,6 +187,22 @@ fun SettingsSummary(
             add { SettingsBadgeChip("Инварианты", tertiary, onTertiary) }
         }
 
+        // "Инструменты" (по замечанию пользователя) — если в настройках
+        // выбран хотя бы один инструмент (`tools_json`: выбор в «Выбрать из
+        // доступных» или ручной JSON). В строке чата в списке агентов —
+        // по той же логике, что и остальные настройки: только если набор
+        // инструментов чата отличается от набора агента; если чат их убрал,
+        // а у агента они есть — "Инструменты (Выкл.)". Сравнивается набор
+        // имён функций, а не сырой текст JSON (иначе разное форматирование
+        // одного и того же выбора считалось бы отличием).
+        diffBadgeText(
+            toolsKey(settings.tools_json),
+            baselineSettings?.let { toolsKey(it.tools_json) },
+            hasBaseline,
+            { if (hasConfiguredTools(settings.tools_json)) "Инструменты" else null },
+            "Инструменты (Выкл.)",
+        )?.let { text -> add { SettingsBadgeChip(text, tertiary, onTertiary) } }
+
         // Профиль — сразу после бейджа памяти, справа от него, в том же ряду
         // (по замечанию пользователя), а не отдельным блоком выше/ниже; не
         // участвует в diff-сравнении с агентом.
@@ -195,6 +216,32 @@ fun SettingsSummary(
     ) {
         badges.forEach { badge -> badge() }
     }
+}
+
+private val toolsJsonParser = Json { ignoreUnknownKeys = true }
+
+/** Выбран ли в `tools_json` хотя бы один инструмент: непустой JSON-массив.
+ * "[]" (так «Выбрать из доступных» кодирует "ничего не выбрано") и пустая
+ * строка — нет. Невалидный, но непустой текст считаем настроенным: сервер
+ * всё равно попытается его использовать (и вернёт ошибку), скрывать это
+ * бейджем было бы неверно. */
+fun hasConfiguredTools(toolsJson: String): Boolean {
+    if (toolsJson.isBlank()) return false
+    val parsed = runCatching { toolsJsonParser.parseToJsonElement(toolsJson) }.getOrNull() ?: return true
+    return (parsed as? JsonArray)?.isNotEmpty() ?: true
+}
+
+/** Ключ сравнения выбора инструментов чата и агента: множество имён
+ * функций из `tools_json`; невалидный JSON — сам текст (без пробелов по
+ * краям); пусто/"[]" — пустое множество. */
+private fun toolsKey(toolsJson: String): Any {
+    if (!hasConfiguredTools(toolsJson)) return emptySet<String>()
+    val array = runCatching { toolsJsonParser.parseToJsonElement(toolsJson) }.getOrNull() as? JsonArray
+        ?: return toolsJson.trim()
+    return array.mapNotNull { tool ->
+        val function = (tool as? JsonObject)?.get("function") as? JsonObject
+        (function?.get("name") as? JsonPrimitive)?.contentOrNull ?: tool.toString()
+    }.toSet()
 }
 
 /** Значения пяти флагов памяти (родительский тумблер + пять типов/слоёв) —

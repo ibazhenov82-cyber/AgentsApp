@@ -8,6 +8,7 @@ import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.Branch
 import com.example.agentsapp.data.remote.Chat
 import com.example.agentsapp.data.remote.ChatStats
+import com.example.agentsapp.data.remote.McpCallEvent
 import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.Settings
@@ -39,6 +40,12 @@ data class StreamingDraft(
      * "Обновление фактов" и т.п.), приходит событиями `status` от сервера —
      * показывается вместо контента, пока `content` ещё пуст (см. [DraftBubble]). */
     val status: String = "Выполняется запрос к модели",
+    /** Новое ТЗ (интеграция с MCP-сервером) — вызовы через MCP-сервер по
+     * ходу ЭТОЙ генерации, в порядке поступления (started, потом finished
+     * для того же имени как отдельный элемент — не заменяет started, чтобы
+     * в UI было видно оба момента, см. [McpCallChips]). Финальный список за
+     * весь обмен приходит отдельно в `Message.mcp_events` (после `Done`). */
+    val mcpCalls: List<McpCallEvent> = emptyList(),
 )
 
 /** Id-заглушка для оптимистично показанного сообщения пользователя — до
@@ -431,6 +438,10 @@ class ChatViewModel(
                     )
                     _state.update { it.copy(streamingDraft = draft) }
                 }
+                is AgentStreamEvent.McpCall -> {
+                    draft = draft.copy(mcpCalls = draft.mcpCalls + McpCallEvent(name = event.name, status = event.status, ok = event.ok, error = event.error))
+                    _state.update { it.copy(streamingDraft = draft) }
+                }
                 is AgentStreamEvent.Done -> {
                     _state.update { it.copy(streamingDraft = null) }
                     refreshChatAndMessages()
@@ -517,6 +528,10 @@ class ChatViewModel(
                             content = draft.content + event.content,
                             reasoningContent = draft.reasoningContent + event.reasoningContent,
                         )
+                        _state.update { it.copy(streamingDraft = draft) }
+                    }
+                    is TaskManagerStepEvent.McpCall -> {
+                        draft = draft.copy(mcpCalls = draft.mcpCalls + McpCallEvent(name = event.name, status = event.status, ok = event.ok, error = event.error))
                         _state.update { it.copy(streamingDraft = draft) }
                     }
                     is TaskManagerStepEvent.Done -> {

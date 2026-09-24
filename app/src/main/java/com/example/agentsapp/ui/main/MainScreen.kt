@@ -21,6 +21,8 @@ import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schema
@@ -28,6 +30,8 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -65,6 +69,54 @@ import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.ui.common.SettingsSummary
 
+/** Кебаб-меню главного экрана (по замечанию пользователя — вместо ряда
+ * кнопок на тулбаре): Настройки → Модели → Профили → Инварианты → Модели
+ * состояний задач → MCP-сервер. Иконки — те же, что были у кнопок. */
+@Composable
+private fun MainOverflowMenu(
+    onOpenDefaultSettings: () -> Unit,
+    onOpenModels: () -> Unit,
+    onOpenProfiles: () -> Unit,
+    onOpenInvariants: () -> Unit,
+    onOpenTaskMachines: () -> Unit,
+    onOpenMcp: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(Icons.Filled.MoreVert, contentDescription = "Меню")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            MainMenuItem("Настройки", { Icon(Icons.Filled.Settings, contentDescription = null) }) {
+                expanded = false; onOpenDefaultSettings()
+            }
+            // Иконка "Linked services" (Material Symbols) — её нет в
+            // material-icons-extended, поэтому векторный ресурс
+            // res/drawable/ic_linked_services.xml.
+            MainMenuItem("Модели", { Icon(painterResource(R.drawable.ic_linked_services), contentDescription = null) }) {
+                expanded = false; onOpenModels()
+            }
+            MainMenuItem("Профили", { Icon(Icons.Filled.Badge, contentDescription = null) }) {
+                expanded = false; onOpenProfiles()
+            }
+            MainMenuItem("Инварианты", { Icon(Icons.Filled.Gavel, contentDescription = null) }) {
+                expanded = false; onOpenInvariants()
+            }
+            MainMenuItem("Модели состояний задач", { Icon(Icons.Filled.Schema, contentDescription = null) }) {
+                expanded = false; onOpenTaskMachines()
+            }
+            MainMenuItem("MCP-сервер", { Icon(Icons.Filled.Extension, contentDescription = null) }) {
+                expanded = false; onOpenMcp()
+            }
+        }
+    }
+}
+
+@Composable
+private fun MainMenuItem(text: String, leadingIcon: @Composable () -> Unit, onClick: () -> Unit) {
+    DropdownMenuItem(text = { Text(text) }, leadingIcon = leadingIcon, onClick = onClick)
+}
+
 /**
  * Главный экран приложения: сводный список агентов вместе с их чатами.
  * Работает только через переданный [MainViewModel] — весь доступ к сети
@@ -84,6 +136,7 @@ fun MainScreen(
     onOpenInvariants: () -> Unit,
     onOpenTaskMachines: () -> Unit,
     onOpenTask: (taskId: String) -> Unit,
+    onOpenMcp: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -118,37 +171,16 @@ fun MainScreen(
             TopAppBar(
                 title = { Text("AI Агенты") },
                 actions = {
-                    IconButton(onClick = onOpenModels) {
-                        // Иконка "Linked services" (Material Symbols, fonts.google.com/icons) —
-                        // её нет в классическом наборе Material Icons (material-icons-extended),
-                        // подключённом в проекте, поэтому используется точный SVG, экспортированный
-                        // как Android Vector Drawable — см. res/drawable/ic_linked_services.xml.
-                        Icon(painterResource(R.drawable.ic_linked_services), contentDescription = "Модели")
-                    }
-                    IconButton(onClick = onOpenProfiles) {
-                        // Справочник профилей-пайплайнов персонализации, общий для
-                        // всех агентов — доступ с главного экрана (замечание 1).
-                        Icon(Icons.Filled.Badge, contentDescription = "Профили")
-                    }
-                    IconButton(onClick = onOpenInvariants) {
-                        // "День 14" — общий справочник инвариантов, по аналогии со
-                        // справочником профилей выше (та же кнопка на главном
-                        // экране, множественный выбор — в настройках агента/чата).
-                        Icon(Icons.Filled.Gavel, contentDescription = "Инварианты")
-                    }
-                    IconButton(onClick = onOpenTaskMachines) {
-                        // "Менеджер задач" (обновление "Дня 13") — переход к экрану настройки
-                        // состояний/действий/моделей состояний задач, по аналогии с кнопками
-                        // "Профили"/"Инварианты" выше (замечание пользователя: на главном экране
-                        // не было кнопки перехода к экрану настроек машины состояний).
-                        // Icons.Filled.AccountTree здесь не подходит — эта иконка уже занята
-                        // под другой смысл (кнопка "Ветки диалога" в ChatScreen.kt), поэтому
-                        // для машины состояний используется Icons.Filled.Schema.
-                        Icon(Icons.Filled.Schema, contentDescription = "Модели состояний задач")
-                    }
-                    IconButton(onClick = onOpenDefaultSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Настройки")
-                    }
+                    // Все разделы — в одном кебаб-меню (по замечанию пользователя),
+                    // вместо ряда кнопок на тулбаре.
+                    MainOverflowMenu(
+                        onOpenDefaultSettings = onOpenDefaultSettings,
+                        onOpenModels = onOpenModels,
+                        onOpenProfiles = onOpenProfiles,
+                        onOpenInvariants = onOpenInvariants,
+                        onOpenTaskMachines = onOpenTaskMachines,
+                        onOpenMcp = onOpenMcp,
+                    )
                 },
             )
         },

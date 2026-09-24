@@ -66,6 +66,14 @@ data class Settings(
     val logprobs: Boolean,
     val frequency_penalty: Double? = null,
     val presence_penalty: Double? = null,
+    // Новое ТЗ (интеграция с MCP-сервером) — СПРАВОЧНОЕ поле, только для
+    // интерфейса: какие источники инструментов реально дают эффект в этом
+    // чате/агенте прямо сейчас — "own"/"memory"/"task"/"skills"/"mcp". НЕ
+    // влияет на сам запрос к модели (это уже решено на сервере, tools_json
+    // выше — просто как есть). Используется, чтобы не показывать раздел
+    // "Инструменты MCP" активным, если "mcp" нет в списке (MCP выключен на
+    // уровне сервиса AgentsCore целиком, не только этого чата).
+    val tools_sources: List<String> = emptyList(),
 )
 
 @Serializable
@@ -188,6 +196,14 @@ data class Message(
     // как TaskEvent (см. ниже). null/пусто — за этот ответ ни одна задача не
     // менялась.
     val task_events: String? = null,
+    // Новое ТЗ (интеграция с MCP-сервером) — тот же принцип, что и у
+    // task_events выше, но для вызовов через ОТДЕЛЬНЫЙ MCP-сервер: JSON-массив
+    // [{"type":"mcp_call","name","status":"started"|"finished","ok","error"}]
+    // (десериализуется как McpCallEvent, см. ниже), накопленный за весь обмен,
+    // который сформировал ЭТО сообщение ассистента. Отдельное от task_events
+    // поле — разные источники событий. null/пусто — за этот ответ ни один
+    // MCP-инструмент не вызывался.
+    val mcp_events: String? = null,
     // "Менеджер задач" (обновление "Дня 13") — `true`, если это сообщение
     // ассистента сгенерировано автономным шагом (см. `POST
     // /chats/{chat_id}/tasks/{task_id}/task-manager/step`), а не ответом на
@@ -536,6 +552,20 @@ data class TaskEvent(
     val kind: String? = null,
 )
 
+/** Один элемент `Message.mcp_events` (см. поле выше) — тот же вызов, что
+ * приходит инлайн по SSE как [AgentStreamEvent.McpCall]/[TaskManagerStepEvent.McpCall]
+ * во время генерации, здесь — уже накопленный и привязанный к конкретному
+ * сохранённому сообщению (см. `ChatScreen.kt`, `McpCallChips`). `ok`/`error`
+ * пусты для `status == "started"` (результат ещё не известен). */
+@Serializable
+data class McpCallEvent(
+    val type: String = "mcp_call",
+    val name: String,
+    val status: String, // "started" | "finished"
+    val ok: Boolean? = null,
+    val error: String? = null,
+)
+
 // ---- тела запросов ----------------------------------------------------------
 
 /** Ручное вмешательство человека, БЕЗ обращения к модели — единственное
@@ -562,6 +592,11 @@ sealed class AgentStreamEvent {
      * "Модель рассуждает…". */
     data class Status(val status: String) : AgentStreamEvent()
     data class Delta(val content: String, val reasoningContent: String) : AgentStreamEvent()
+    /** Новое ТЗ (интеграция с MCP-сервером) — вызов инструмента через
+     * отдельный MCP-сервер, инлайн по ходу генерации (до `Done`, который несёт
+     * тот же список целиком в `Message.mcp_events`) — клиент показывает
+     * "Инструмент: <name>" сразу, не дожидаясь конца ответа. */
+    data class McpCall(val name: String, val status: String, val ok: Boolean?, val error: String?) : AgentStreamEvent()
     data class Done(val message: Message) : AgentStreamEvent()
     data class Error(val message: String) : AgentStreamEvent()
 }
@@ -574,6 +609,7 @@ sealed class AgentStreamEvent {
 sealed class TaskManagerStepEvent {
     data class Status(val status: String) : TaskManagerStepEvent()
     data class Delta(val content: String, val reasoningContent: String) : TaskManagerStepEvent()
+    data class McpCall(val name: String, val status: String, val ok: Boolean?, val error: String?) : TaskManagerStepEvent()
     data class Done(val message: Message, val shouldContinue: Boolean, val taskStatus: String) : TaskManagerStepEvent()
     data class Error(val message: String) : TaskManagerStepEvent()
 }

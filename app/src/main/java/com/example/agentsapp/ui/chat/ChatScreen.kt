@@ -36,8 +36,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -107,10 +109,12 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.example.agentsapp.data.remote.Branch
 import com.example.agentsapp.data.remote.ChatStats
+import com.example.agentsapp.data.remote.McpCallEvent
 import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.TaskEvent
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.ui.common.SettingsSummary
+import com.example.agentsapp.ui.common.toolTitle
 import com.example.agentsapp.ui.theme.branchBadgeColor
 import com.example.agentsapp.ui.theme.summaryBubbleColor
 import com.mikepenz.markdown.m3.Markdown
@@ -241,18 +245,14 @@ fun ChatScreen(
                         }
                     },
                     actions = {
-                        // Память и профили-пайплайны (модель памяти + персонализация) —
-                        // отдельная кнопка от настроек чата, т.к. это отдельная сущность
-                        // с собственным CRUD и снимком памяти для проверки.
-                        IconButton(onClick = onOpenMemory, enabled = !state.isBusy) {
-                            Icon(Icons.Filled.Memory, contentDescription = "Память и профиль")
-                        }
-                        IconButton(onClick = onOpenChatSettings, enabled = !state.isBusy) {
-                            Icon(Icons.Filled.Settings, contentDescription = "Настройки чата")
-                        }
+                        // Все действия экрана — в одном кебаб-меню (по замечанию
+                        // пользователя): "Настройки чата" и "Память и профиль" больше
+                        // не отдельные кнопки на тулбаре, а первые пункты меню.
                         ChatOverflowMenu(
                             state = state,
                             viewModel = viewModel,
+                            onOpenChatSettings = onOpenChatSettings,
+                            onOpenMemory = onOpenMemory,
                             onShowBranchPicker = { showBranchPickerDialog = true },
                             onShowDeleteBranchConfirm = { showDeleteBranchConfirm = true },
                         )
@@ -512,7 +512,9 @@ private fun messageCountNoun(count: Int): String {
     }
 }
 
-/** Кебаб-меню (замечание 13): суммаризация, ветки диалога и — при активной
+/** Кебаб-меню (замечание 13): настройки чата и память/профиль (по замечанию
+ * пользователя — перенесены сюда с тулбара, первыми пунктами), затем
+ * суммаризация, ветки диалога и — при активной
  * стратегии Sticky Facts — переключатель панели фактов. Полностью
  * заблокировано во время отправки/суммаризации (замечание 14). Все пункты
  * снабжены иконками; "Ветки диалога" не показывается, если в чате ещё нет ни
@@ -523,6 +525,8 @@ private fun messageCountNoun(count: Int): String {
 private fun ChatOverflowMenu(
     state: ChatUiState,
     viewModel: ChatViewModel,
+    onOpenChatSettings: () -> Unit,
+    onOpenMemory: () -> Unit,
     onShowBranchPicker: () -> Unit,
     onShowDeleteBranchConfirm: () -> Unit,
 ) {
@@ -532,6 +536,26 @@ private fun ChatOverflowMenu(
             Icon(Icons.Filled.MoreVert, contentDescription = "Ещё")
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Настройки чата") },
+                leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onOpenChatSettings()
+                },
+            )
+            // Память и профили-пайплайны (модель памяти + персонализация) —
+            // отдельный пункт от настроек чата: отдельная сущность с
+            // собственным CRUD и снимком памяти для проверки.
+            DropdownMenuItem(
+                text = { Text("Память и профиль") },
+                leadingIcon = { Icon(Icons.Filled.Memory, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onOpenMemory()
+                },
+            )
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text("Подготовить суммарный запрос") },
                 leadingIcon = { Icon(Icons.Filled.Summarize, contentDescription = null) },
@@ -1028,6 +1052,9 @@ private fun MessageItem(
                     // (пункт 7 замечаний: в чате может быть несколько
                     // параллельных открытых задач, неоднозначность недопустима).
                     TaskEventChips(message, onOpenTask)
+                    // Инструменты, вызванные через MCP-сервер за этот ответ
+                    // (новое ТЗ) — тот же принцип, что и переходы задач выше.
+                    McpCallChips(message)
                     Bubble(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         selected = selected,
@@ -1177,6 +1204,99 @@ private fun TaskEventChips(message: Message, onOpenTask: (String) -> Unit) {
     }
 }
 
+/** Инструменты, вызванные через отдельный MCP-сервер за этот ответ (новое
+ * ТЗ) — по одной строке-действию на КАЖДЫЙ вызов, столбиком: «Использую
+ * инструмент git_host_get_repo — Получение информации о репозитории» (по
+ * замечанию пользователя: раньше это был ряд чипов в одну строку, который
+ * при нескольких вызовах вылезал за ширину экрана и ломал вёрстку).
+ * События started/finished одного вызова схлопываются в одну строку (см.
+ * [collapseMcpCalls]); статус — значком в начале строки. */
+@Composable
+private fun McpCallChips(message: Message) {
+    val raw = message.mcp_events
+    if (raw.isNullOrBlank()) return
+    val events = remember(raw) {
+        runCatching { taskEventsJson.decodeFromString(ListSerializer(McpCallEvent.serializer()), raw) }.getOrDefault(emptyList())
+    }
+    McpCallLines(events)
+}
+
+/** Один вызов инструмента для отображения: `ok == null` — ещё выполняется. */
+private data class McpCallLine(val name: String, val finished: Boolean, val ok: Boolean?, val error: String?)
+
+/** Схлопывает поток событий `started`/`finished` в по одной записи на вызов:
+ * `finished` закрывает последний ещё открытый вызов с тем же именем (вызовы
+ * выполняются сервером последовательно, так что это однозначно); одиночный
+ * `finished` без `started` (не должен случаться, но не теряем) — отдельной
+ * записью. */
+private fun collapseMcpCalls(events: List<McpCallEvent>): List<McpCallLine> {
+    val lines = mutableListOf<McpCallLine>()
+    for (event in events) {
+        if (event.status == "finished") {
+            val openIndex = lines.indexOfLast { it.name == event.name && !it.finished }
+            val closed = McpCallLine(event.name, finished = true, ok = event.ok, error = event.error)
+            if (openIndex >= 0) lines[openIndex] = closed else lines.add(closed)
+        } else {
+            lines.add(McpCallLine(event.name, finished = false, ok = null, error = null))
+        }
+    }
+    return lines
+}
+
+@Composable
+private fun McpCallLines(events: List<McpCallEvent>) {
+    val lines = remember(events) { collapseMcpCalls(events) }
+    if (lines.isEmpty()) return
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        lines.forEach { line -> McpCallLineRow(line) }
+    }
+}
+
+@Composable
+private fun McpCallLineRow(line: McpCallLine) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
+        Box(modifier = Modifier.padding(top = 2.dp).size(14.dp), contentAlignment = Alignment.Center) {
+            when {
+                !line.finished -> CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                line.ok == false -> Icon(
+                    Icons.Filled.ErrorOutline, contentDescription = "Ошибка",
+                    tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp),
+                )
+                else -> Icon(
+                    Icons.Filled.Build, contentDescription = null,
+                    tint = muted, modifier = Modifier.size(14.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(6.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            val title = toolTitle(line.name)
+            Text(
+                text = buildAnnotatedString {
+                    append("Использую инструмент ")
+                    withStyle(SpanStyle(fontWeight = FontWeight.Medium)) { append(line.name) }
+                    if (title != null) append(" — $title")
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = muted,
+            )
+            if (line.ok == false && !line.error.isNullOrBlank()) {
+                Text(
+                    text = "Ошибка: ${line.error}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SmallBadge(text: String, color: Color, onClick: (() -> Unit)? = null) {
@@ -1247,30 +1367,38 @@ private fun Bubble(
  * зашитый нейтральный индикатор "Модель рассуждает…". */
 @Composable
 private fun DraftBubble(draft: StreamingDraft) {
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
-        if (draft.content.isEmpty()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(modifier = Modifier.size(14.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(draft.status, style = MaterialTheme.typography.labelSmall)
-            }
-        } else {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-                        .padding(10.dp),
-                ) {
-                    Text(draft.content)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // Инструменты MCP-сервера, вызванные по ходу ЭТОЙ генерации (новое
+        // ТЗ) — показываются сразу, ещё до появления текста ответа, теми же
+        // строками-действиями, что и в уже сохранённом сообщении (см. McpCallChips).
+        if (draft.mcpCalls.isNotEmpty()) {
+            McpCallLines(draft.mcpCalls)
+        }
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+            if (draft.content.isEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(draft.status, style = MaterialTheme.typography.labelSmall)
                 }
-                Text(
-                    text = "печатает…",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-                )
+            } else {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                            .padding(10.dp),
+                    ) {
+                        Text(draft.content)
+                    }
+                    Text(
+                        text = "печатает…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+                    )
+                }
             }
         }
     }

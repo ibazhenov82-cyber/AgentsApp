@@ -4,9 +4,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.example.agentsapp.data.remote.ServerConnectionSettings
 import com.example.agentsapp.data.repository.AgentsCoreRepository
+import com.example.agentsapp.data.repository.McpRepository
 import com.example.agentsapp.ui.chat.ChatViewModel
 import com.example.agentsapp.ui.invariants.InvariantsViewModel
 import com.example.agentsapp.ui.main.MainViewModel
+import com.example.agentsapp.ui.mcp.AddScheduledToolViewModel
+import com.example.agentsapp.ui.mcp.GitHostsViewModel
+import com.example.agentsapp.ui.mcp.McpViewModel
+import com.example.agentsapp.ui.mcp.ScheduledToolRunsViewModel
 import com.example.agentsapp.ui.memory.MemoryViewModel
 import com.example.agentsapp.ui.models.ModelsViewModel
 import com.example.agentsapp.ui.profiles.ProfilesViewModel
@@ -39,10 +44,12 @@ class SettingsViewModelFactory(
     private val mode: SettingsMode,
     private val repository: AgentsCoreRepository,
     private val connectionSettings: ServerConnectionSettings,
+    private val mcpConnectionSettings: com.example.agentsapp.data.remote.McpConnectionSettings,
+    private val mcpRepository: McpRepository,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        SettingsViewModel(mode, repository, connectionSettings) as T
+        SettingsViewModel(mode, repository, connectionSettings, mcpConnectionSettings, mcpRepository) as T
 }
 
 class ChatViewModelFactory(
@@ -94,4 +101,40 @@ class TaskDetailViewModelFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
         TaskDetailViewModel(taskId, repository) as T
+}
+
+// ---- Отдельный MCP-сервер (новое ТЗ, третий компонент) — свой набор
+// фабрик, все принимают [McpRepository] (не [AgentsCoreRepository]). ----
+
+class McpViewModelFactory(
+    private val repository: McpRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        McpViewModel(repository) as T
+}
+
+class AddScheduledToolViewModelFactory(
+    private val repository: McpRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        AddScheduledToolViewModel(repository) as T
+}
+
+class ScheduledToolRunsViewModelFactory(
+    private val toolId: String,
+    private val repository: McpRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        ScheduledToolRunsViewModel(toolId, repository) as T
+}
+
+class GitHostsViewModelFactory(
+    private val repository: McpRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        GitHostsViewModel(repository) as T
 }
