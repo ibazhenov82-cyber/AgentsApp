@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -83,6 +84,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -109,11 +111,14 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.example.agentsapp.data.remote.Branch
 import com.example.agentsapp.data.remote.ChatStats
-import com.example.agentsapp.data.remote.McpCallEvent
+import com.example.agentsapp.data.remote.ToolCallEvent
 import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.TaskEvent
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.ui.common.SettingsSummary
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.agentsapp.ui.common.toolTitle
 import com.example.agentsapp.ui.theme.branchBadgeColor
 import com.example.agentsapp.ui.theme.summaryBubbleColor
@@ -165,6 +170,25 @@ fun ChatScreen(
         viewModel.refreshSettings()
     }
 
+    // Экран виден (между onStart и onStop) — только тогда сообщения
+    // отмечаются прочитанными, и для этого чата не показывается всплывающее
+    // «Новый ответ» (см. RunsRepository.openChatId).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> viewModel.onScreenVisible(true)
+                Lifecycle.Event.ON_STOP -> viewModel.onScreenVisible(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.onScreenVisible(false)
+        }
+    }
+
     // Разовое сообщение об ошибке — показываем в Snackbar и сразу сбрасываем.
     LaunchedEffect(state.errorMessage) {
         val message = state.errorMessage
@@ -187,22 +211,29 @@ fun ChatScreen(
     val itemCount = state.messages.size + (if (state.streamingDraft != null) 1 else 0) +
         (if (state.isSummarizing) 1 else 0) + taskCards.size
 
-    // Мгновенный переход вниз при открытии чата (без анимации).
+    // Мгновенный переход при открытии чата (без анимации): к первому
+    // непрочитанному, если оно есть, иначе — в самый низ.
     LaunchedEffect(state.isLoading) {
         if (!state.isLoading) {
-            listState.scrollToTrueBottom(itemCount, animate = false)
+            val target = state.scrollToMessageId
+            val targetIndex = if (target != null) state.messages.indexOfFirst { it.id == target } else -1
+            if (targetIndex >= 0) {
+                listState.scrollToItem(targetIndex)
+                viewModel.consumeScrollTarget()
+            } else {
+                listState.scrollToTrueBottom(itemCount, animate = false)
+            }
         }
     }
 
-    // Плавный скролл при любом новом содержимом: новое/удалённое сообщение
-    // (включая сообщения с ролью "error", которые сервер мог сохранить как
-    // системные), появление/исчезновение индикатора суммаризации. Ключ —
+    // Плавный скролл при любом новом содержимом: новое/удалённое сообщение,
+    // появление/исчезновение индикатора суммаризации. Ключ —
     // весь список `state.messages` (а не только его размер), поэтому
     // эффект перезапускается и тогда, когда состав сообщений поменялся, а
     // их количество осталось тем же (например, замена локальной заглушки
     // отправленного сообщения на подтверждённое сервером).
     LaunchedEffect(state.messages, state.isSummarizing) {
-        listState.scrollToTrueBottom(itemCount, animate = true)
+        if (state.scrollToMessageId == null) listState.scrollToTrueBottom(itemCount, animate = true)
     }
 
     // Замечание 15: во время стриминга автоскролл начинается только когда
@@ -272,7 +303,11 @@ fun ChatScreen(
                     text = state.inputText,
                     onTextChange = viewModel::onInputTextChange,
                     onSend = viewModel::sendMessage,
-                    enabled = !state.isBusy,
+                    onStop = viewModel::stopGeneration,
+                    // Пока формируется ответ, поле доступно (можно набирать
+                    // следующий вопрос), но вместо «Отправить» — «Остановить».
+                    enabled = !state.isSending && !state.isSummarizing,
+                    isGenerating = state.isGenerating,
                 )
             }
         },
@@ -532,7 +567,7 @@ private fun ChatOverflowMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { expanded = true }, enabled = !state.isBusy) {
+        IconButton(onClick = { expanded = true }, enabled = !state.isSending && !state.isSummarizing) {
             Icon(Icons.Filled.MoreVert, contentDescription = "Ещё")
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -568,6 +603,7 @@ private fun ChatOverflowMenu(
             DropdownMenuItem(
                 text = { Text("Добавить ветку диалога") },
                 leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                enabled = !state.isBusy,
                 onClick = {
                     expanded = false
                     viewModel.createBranch()
@@ -813,6 +849,9 @@ private fun MessagesList(
             if (showContextStartDivider && index == firstActiveIndex) {
                 ContextStartDivider()
             }
+            if (message.id == state.firstUnreadMessageId) {
+                NewMessagesDivider()
+            }
             val faded = activeStartId != null && message.id < activeStartId
             MessageItem(
                 message = message,
@@ -969,6 +1008,21 @@ private fun ContextStartDivider() {
 }
 
 /** Индикатор суммаризации под последним сообщением (замечание 14). */
+/** Разделитель «Новые сообщения» перед первым непрочитанным (ТЗ, раздел 3.3). */
+@Composable
+private fun NewMessagesDivider() {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.primary)
+        Text(
+            "Новые сообщения",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
+        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.primary)
+    }
+}
+
 @Composable
 private fun SummarizingIndicator() {
     Row(
@@ -1001,7 +1055,6 @@ private fun MessageItem(
 ) {
     val alignment = when (message.role) {
         "user" -> Alignment.CenterEnd
-        "error" -> Alignment.Center
         else -> Alignment.CenterStart
     }
 
@@ -1109,27 +1162,6 @@ private fun MessageItem(
                     }
                 }
             }
-            "error" -> {
-                Column(
-                    modifier = Modifier
-                        .widthIn(max = 320.dp)
-                        .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                        .padding(8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        text = "Ошибка",
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                    Text(
-                        text = message.content,
-                        color = MaterialTheme.colorScheme.error,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-            }
             else -> {
                 Bubble(
                     color = MaterialTheme.colorScheme.surfaceVariant,
@@ -1153,9 +1185,26 @@ private fun MessageItem(
  * аналогично блоку рассуждений). */
 @Composable
 private fun MessageBadges(message: Message, onToggleFacts: () -> Unit) {
-    val hasBadges = message.is_task_manager_step || message.is_summary || message.branch > 0 || !message.facts.isNullOrBlank()
+    val statusLabel = when (message.status) {
+        "cancelled" -> "Остановлено"
+        "interrupted" -> "Прервано"
+        "failed" -> "Ошибка"
+        else -> null
+    }
+    val fromScheduler = message.role == "user" && message.source == "scheduler"
+    val hasBadges = message.is_task_manager_step || message.is_summary || message.branch > 0 ||
+        !message.facts.isNullOrBlank() || statusLabel != null || fromScheduler
     if (!hasBadges) return
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 2.dp)) {
+        if (statusLabel != null) {
+            SmallBadge(
+                text = statusLabel,
+                color = if (message.status == "failed") MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
+            )
+        }
+        if (fromScheduler) {
+            SmallBadge(text = "По расписанию", color = MaterialTheme.colorScheme.tertiaryContainer)
+        }
         if (message.is_task_manager_step) {
             SmallBadge(text = "Менеджер задач", color = MaterialTheme.colorScheme.tertiaryContainer)
         }
@@ -1204,47 +1253,55 @@ private fun TaskEventChips(message: Message, onOpenTask: (String) -> Unit) {
     }
 }
 
-/** Инструменты, вызванные через отдельный MCP-сервер за этот ответ (новое
- * ТЗ) — по одной строке-действию на КАЖДЫЙ вызов, столбиком: «Использую
- * инструмент git_host_get_repo — Получение информации о репозитории» (по
+/** Инструменты, вызванные за этот ответ — по одной строке-действию на КАЖДЫЙ
+ * вызов, столбиком: «Использую инструмент GIT API git_host_get_repo —
+ * Получение информации о репозитории» (у MCP-инструментов источник выделен
+ * цветом; по
  * замечанию пользователя: раньше это был ряд чипов в одну строку, который
  * при нескольких вызовах вылезал за ширину экрана и ломал вёрстку).
  * События started/finished одного вызова схлопываются в одну строку (см.
  * [collapseMcpCalls]); статус — значком в начале строки. */
 @Composable
 private fun McpCallChips(message: Message) {
-    val raw = message.mcp_events
-    if (raw.isNullOrBlank()) return
-    val events = remember(raw) {
-        runCatching { taskEventsJson.decodeFromString(ListSerializer(McpCallEvent.serializer()), raw) }.getOrDefault(emptyList())
+    val toolRaw = message.tool_events
+    if (toolRaw.isNullOrBlank()) return
+    val events = remember(toolRaw) {
+        runCatching { taskEventsJson.decodeFromString(ListSerializer(ToolCallEvent.serializer()), toolRaw) }.getOrDefault(emptyList())
     }
     McpCallLines(events)
 }
 
 /** Один вызов инструмента для отображения: `ok == null` — ещё выполняется. */
-private data class McpCallLine(val name: String, val finished: Boolean, val ok: Boolean?, val error: String?)
+private data class McpCallLine(
+    val name: String,
+    val group: String?,
+    val finished: Boolean,
+    val ok: Boolean?,
+    val error: String?,
+)
 
 /** Схлопывает поток событий `started`/`finished` в по одной записи на вызов:
  * `finished` закрывает последний ещё открытый вызов с тем же именем (вызовы
  * выполняются сервером последовательно, так что это однозначно); одиночный
  * `finished` без `started` (не должен случаться, но не теряем) — отдельной
  * записью. */
-private fun collapseMcpCalls(events: List<McpCallEvent>): List<McpCallLine> {
+private fun collapseMcpCalls(events: List<ToolCallEvent>): List<McpCallLine> {
     val lines = mutableListOf<McpCallLine>()
     for (event in events) {
         if (event.status == "finished") {
             val openIndex = lines.indexOfLast { it.name == event.name && !it.finished }
-            val closed = McpCallLine(event.name, finished = true, ok = event.ok, error = event.error)
+            val group = event.group ?: lines.getOrNull(openIndex)?.group
+            val closed = McpCallLine(event.name, group, finished = true, ok = event.ok, error = event.error)
             if (openIndex >= 0) lines[openIndex] = closed else lines.add(closed)
         } else {
-            lines.add(McpCallLine(event.name, finished = false, ok = null, error = null))
+            lines.add(McpCallLine(event.name, event.group, finished = false, ok = null, error = null))
         }
     }
     return lines
 }
 
 @Composable
-private fun McpCallLines(events: List<McpCallEvent>) {
+private fun McpCallLines(events: List<ToolCallEvent>) {
     val lines = remember(events) { collapseMcpCalls(events) }
     if (lines.isEmpty()) return
     Column(
@@ -1275,9 +1332,16 @@ private fun McpCallLineRow(line: McpCallLine) {
         Spacer(Modifier.width(6.dp))
         Column(modifier = Modifier.weight(1f)) {
             val title = toolTitle(line.name)
+            // Источник MCP-инструмента («GIT API», «Планировщик», …) — тем же
+            // цветом, что заголовки групп в выборе инструментов в настройках.
+            val groupColor = MaterialTheme.colorScheme.primary
             Text(
                 text = buildAnnotatedString {
                     append("Использую инструмент ")
+                    if (!line.group.isNullOrBlank()) {
+                        withStyle(SpanStyle(color = groupColor, fontWeight = FontWeight.Medium)) { append(line.group) }
+                        append(" ")
+                    }
                     withStyle(SpanStyle(fontWeight = FontWeight.Medium)) { append(line.name) }
                     if (title != null) append(" — $title")
                 },
@@ -1371,8 +1435,8 @@ private fun DraftBubble(draft: StreamingDraft) {
         // Инструменты MCP-сервера, вызванные по ходу ЭТОЙ генерации (новое
         // ТЗ) — показываются сразу, ещё до появления текста ответа, теми же
         // строками-действиями, что и в уже сохранённом сообщении (см. McpCallChips).
-        if (draft.mcpCalls.isNotEmpty()) {
-            McpCallLines(draft.mcpCalls)
+        if (draft.toolCalls.isNotEmpty()) {
+            McpCallLines(draft.toolCalls)
         }
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
             if (draft.content.isEmpty()) {
@@ -1412,28 +1476,46 @@ private fun MessageInputBar(
     text: String,
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
+    onStop: () -> Unit,
     enabled: Boolean,
+    isGenerating: Boolean,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(8.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        OutlinedTextField(
-            value = text,
-            onValueChange = onTextChange,
-            modifier = Modifier.weight(1f),
-            placeholder = { Text("Сообщение…") },
-            enabled = enabled,
-            maxLines = 5,
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        IconButton(
-            onClick = onSend,
-            enabled = text.isNotBlank() && enabled,
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (isGenerating) {
+            Text(
+                text = "Ответ ещё формируется — можно остановить или дождаться",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, top = 4.dp),
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            verticalAlignment = Alignment.Bottom,
         ) {
-            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить")
+            OutlinedTextField(
+                value = text,
+                onValueChange = onTextChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Сообщение…") },
+                enabled = enabled,
+                maxLines = 5,
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            if (isGenerating) {
+                IconButton(onClick = onStop) {
+                    Icon(Icons.Filled.Stop, contentDescription = "Остановить", tint = MaterialTheme.colorScheme.error)
+                }
+            } else {
+                IconButton(
+                    onClick = onSend,
+                    enabled = text.isNotBlank() && enabled,
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить")
+                }
+            }
         }
     }
 }

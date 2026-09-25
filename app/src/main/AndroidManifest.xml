@@ -2,6 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 17+ (targetSdk 37): доступ к адресам локальной сети (10.x,
+         192.168.x, 172.16-31.x, в т.ч. 10.0.2.2 эмулятора) — runtime-разрешение
+         из группы «Устройства поблизости». Без него TCP-соединения с AgentsCore,
+         MCP-сервером и планировщиком в локальной сети падают по тайм-ауту.
+         Запрашивается в MainActivity. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
     <application
         android:name=".AgentsApp"

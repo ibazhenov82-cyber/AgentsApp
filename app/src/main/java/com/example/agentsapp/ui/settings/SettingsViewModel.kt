@@ -7,6 +7,7 @@ import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.DefaultSettings
 import com.example.agentsapp.data.remote.Invariant
 import com.example.agentsapp.data.remote.McpConnectionSettings
+import com.example.agentsapp.data.remote.SchedulerConnectionSettings
 import com.example.agentsapp.data.remote.McpToolDescription
 import com.example.agentsapp.data.remote.ModelInfo
 import com.example.agentsapp.data.remote.Profile
@@ -19,7 +20,6 @@ import com.example.agentsapp.data.remote.jsonValueOf
 import com.example.agentsapp.data.remote.readDefaultSettingsField
 import com.example.agentsapp.data.remote.readSettingsField
 import com.example.agentsapp.data.repository.AgentsCoreRepository
-import com.example.agentsapp.data.repository.McpRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -86,6 +86,9 @@ data class SettingsUiState(
      * "Соединение с сервером", показывается только в режиме [SettingsMode.Default],
      * рядом с адресом AgentsCore, но сохраняется в [McpConnectionSettings]. */
     val mcpConnectionUrl: String = "",
+    /** Адрес сервиса планировщика — третье поле блока "Соединение с сервером"
+     * (только в [SettingsMode.Default]), сохраняется в [SchedulerConnectionSettings]. */
+    val schedulerConnectionUrl: String = "",
     /** Режим "Выбрать из доступных" для поля "Список функций в формате OpenAI"
      * (tools_json) — показывается только в режимах [SettingsMode.Agent]/[SettingsMode.Chat],
      * рядом с полем GROUP_TOOLS. Переключение на ручной ввод JSON и обратно
@@ -104,7 +107,7 @@ class SettingsViewModel(
     private val repository: AgentsCoreRepository,
     private val connectionSettings: ServerConnectionSettings,
     private val mcpConnectionSettings: McpConnectionSettings,
-    private val mcpRepository: McpRepository,
+    private val schedulerConnectionSettings: SchedulerConnectionSettings,
 ) : ViewModel() {
 
     private val toolsJson = Json { ignoreUnknownKeys = true; prettyPrint = true }
@@ -128,19 +131,17 @@ class SettingsViewModel(
             showConnectionBlock = mode is SettingsMode.Default,
             connectionUrl = if (mode is SettingsMode.Default) connectionSettings.currentBaseUrl() else "",
             mcpConnectionUrl = if (mode is SettingsMode.Default) mcpConnectionSettings.currentBaseUrl() else "",
+            schedulerConnectionUrl = if (mode is SettingsMode.Default) schedulerConnectionSettings.currentBaseUrl() else "",
             showProfilePicker = mode is SettingsMode.Agent || mode is SettingsMode.Chat,
             showInvariantsPicker = mode is SettingsMode.Agent || mode is SettingsMode.Chat,
         )
         loadAll()
         if (mode is SettingsMode.Agent || mode is SettingsMode.Chat) {
             viewModelScope.launch {
-                // Только инструменты, которые модель может реально ВЫЗВАТЬ через
-                // MCP-протокол: `schedulable == true` записи `/api/tools`
-                // (git_pull/http_fetch/git_host_poll) — это виды ПЕРИОДИЧЕСКИХ
-                // задач, а не MCP-инструменты; выбранные здесь, они давали
-                // модели заведомо недоступную функцию ("unknown tool").
-                val tools = runCatching { mcpRepository.listTools() }.getOrDefault(emptyList())
-                    .filter { !it.schedulable }
+                // Инструменты всех MCP-серверов, подключённых к AgentsCore
+                // (сервер инструментов, планировщик) — ровно под теми именами,
+                // под которыми AgentsCore предложит их модели.
+                val tools = runCatching { repository.listMcpTools() }.getOrDefault(emptyList())
                 _state.value = _state.value.copy(availableMcpTools = tools)
             }
         }
@@ -312,6 +313,16 @@ class SettingsViewModel(
         }
     }
 
+    /** Адрес планировщика — тот же debounce-приём, сохраняется в [SchedulerConnectionSettings]. */
+    fun onSchedulerConnectionUrlChange(url: String) {
+        _state.value = _state.value.copy(schedulerConnectionUrl = url)
+        debounceJobs["__scheduler_connection_url__"]?.cancel()
+        debounceJobs["__scheduler_connection_url__"] = viewModelScope.launch {
+            delay(DEBOUNCE_MS)
+            schedulerConnectionSettings.setBaseUrl(url)
+        }
+    }
+
     // ---- Режим "Выбрать из доступных" для tools_json (Agent/Chat) --------
 
     /** Включение режима списка — набор отмеченных функций строится заново по
@@ -351,16 +362,10 @@ class SettingsViewModel(
         _state.value = _state.value.copy(isCheckingConnection = true, connectionCheckResult = null)
         viewModelScope.launch {
             try {
-                val health = repository.health()
-                // Версия сервера показывается рядом с "Подключено", чтобы
-                // сразу было видно, если сервер запущен со старой версией
-                // AgentsCore (например, после обновления приложения забыли
-                // передеплоить сервер) — источник многих запутанных
-                // расхождений между ожидаемым и фактическим поведением.
-                val versionSuffix = if (health.version.isNotBlank()) " (версия сервера: ${health.version})" else ""
+                repository.health()
                 _state.value = _state.value.copy(
                     isCheckingConnection = false,
-                    connectionCheckResult = "Подключено$versionSuffix",
+                    connectionCheckResult = "Подключено",
                     connectionCheckSucceeded = true,
                 )
             } catch (e: Exception) {

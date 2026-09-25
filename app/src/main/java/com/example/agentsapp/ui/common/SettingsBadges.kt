@@ -1,17 +1,29 @@
 package com.example.agentsapp.ui.common
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.agentsapp.data.remote.CONTEXT_STRATEGY_OPTION_LABELS
 import com.example.agentsapp.data.remote.Settings
@@ -23,217 +35,326 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import java.util.Locale
+
+/*
+ * Бейджи настроек агента/чата.
+ *
+ * Бейджи компактные (метки, а не кнопки-чипы Material 3 высотой 32dp):
+ * высота ~20dp, шрифт labelSmall, отступы 6×2dp. По умолчанию показываются в
+ * ОДНУ строку — сколько поместится, остальные сворачиваются в «+N»; нажатие
+ * на «+N» раскрывает все бейджи с переносом, «Свернуть» — обратно.
+ */
+
+private val BadgeSpacing: Dp = 4.dp
+private val BadgeShape = RoundedCornerShape(6.dp)
 
 /**
- * Единая сводка настроек ([Settings]) агента или чата — один ряд бейджей, в
- * том же порядке, что и на экране настроек (см. `AGENT_SETTINGS_FIELDS` в
- * `SettingsFieldMeta.kt`): температура+top_p (общим бейджем) → seed →
- * потоковые ответы → рассуждения → уровень рассуждений → максимальное число
- * токенов → ответ в JSON → стоп-последовательности → автоматическая
- * суммаризация → стратегия управления контекстом → сохранение памяти
- * агентом (с перечислением включённых типов памяти) → задачи → инварианты →
- * инструменты → профиль (в этом же ряду, а не отдельным блоком). Все бейджи —
- * одного вида (по замечанию пользователя): заливка — цвет пузыря сообщения
- * пользователя в чате ([BadgeChatFill]), обводка и текст — тёмный, близкий к
- * чёрному вариант того же тона ([BadgeChatBorderAndText]).
+ * Тексты бейджей настроек в том же порядке, что и на экране настроек:
+ * температура+top_p → seed → потоковые ответы → рассуждения → уровень
+ * рассуждений → максимум токенов → JSON → стоп-последовательности →
+ * автосуммаризация → стратегия контекста → память → задачи → инварианты →
+ * инструменты → профиль.
  *
  * Два режима:
- * - [baselineSettings] == null (карточка агента, экран чата) — показывается
- *   всё, что реально задано/включено в [settings], как и раньше; температура/
- *   top_p — всегда первым бейджем, безусловно.
- * - [baselineSettings] != null (строка чата в списке агентов на главном
- *   экране — настройки агента-владельца, по замечанию пользователя) —
- *   бейдж настройки показывается, только если её значение в [settings]
- *   отличается от [baselineSettings]; если чат явно ВЫКЛЮЧИЛ/сбросил
- *   настройку, которая у агента включена/задана, это показывается явно
- *   (например "Потоковые ответы (Выкл.)"), а не молчаливым исчезновением
- *   бейджа — иначе расхождение с агентом было бы не видно.
+ * - [baseline] == null (экран чата) — всё, что задано/включено в [settings];
+ * - [baseline] != null — только настройки, отличающиеся от [baseline]
+ *   (строка чата — от настроек агента, карточка агента — от настроек, которые
+ *   получил бы новый агент). Если настройка выключена/сброшена относительно
+ *   базы, это показывается явно («Потоковые ответы (Выкл.)»).
  */
-@OptIn(ExperimentalLayoutApi::class)
+fun settingsBadgeTexts(
+    settings: Settings,
+    baseline: Settings? = null,
+    // Инварианты выбираются отдельным списком (не поле Settings) и не
+    // наследуются, поэтому показываются, если у владельца выбран хотя бы один.
+    hasInvariants: Boolean = false,
+    profileName: String? = null,
+): List<String> = buildList {
+    val hasBaseline = baseline != null
+
+    diffBadgeText(
+        settings.temperature to settings.top_p,
+        baseline?.let { it.temperature to it.top_p },
+        hasBaseline,
+        { (temperature, topP) ->
+            "Температура: ${formatSettingsNumber(temperature)} · top_p: ${formatSettingsNumber(topP)}"
+        },
+        null,
+    )?.let { add(it) }
+
+    diffBadgeText(
+        settings.seed, baseline?.seed, hasBaseline,
+        { seed -> seed?.let { "Seed: $it" } },
+        "Seed: не задан",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        settings.stream, baseline?.stream, hasBaseline,
+        { if (it) "Потоковые ответы" else null },
+        "Потоковые ответы (Выкл.)",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        settings.thinking_enabled, baseline?.thinking_enabled, hasBaseline,
+        { if (it) "Рассуждения" else null },
+        "Рассуждения (Выкл.)",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        settings.reasoning_effort, baseline?.reasoning_effort, hasBaseline,
+        { effort -> effort?.let { "Уровень рассуждений: $it" } },
+        "Уровень рассуждений: не задан",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        settings.max_tokens, baseline?.max_tokens, hasBaseline,
+        { max -> max?.let { "Макс. токенов: $it" } },
+        "Макс. токенов: не задано",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        settings.json_mode, baseline?.json_mode, hasBaseline,
+        { if (it) "Ответ в JSON" else null },
+        "Ответ в JSON (Выкл.)",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        settings.stop_sequences, baseline?.stop_sequences, hasBaseline,
+        { seqs -> if (seqs.isNotEmpty()) "Стоп-последовательности: ${seqs.joinToString(", ")}" else null },
+        "Стоп-последовательности: нет",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        Triple(settings.autosummary, settings.autosummary_by_messages, settings.autosummary_by_tokens),
+        baseline?.let { Triple(it.autosummary, it.autosummary_by_messages, it.autosummary_by_tokens) },
+        hasBaseline,
+        { (mode, byMessages, byTokens) ->
+            if (mode == "off") {
+                null
+            } else {
+                val (count, unit) = if (mode == "tokens") byTokens to "токенов" else byMessages to "сообщений"
+                "Автосуммаризация ($count $unit)"
+            }
+        },
+        "Автосуммаризация выключена",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        settings.context_strategy to settings.context_strategy_limit,
+        baseline?.let { it.context_strategy to it.context_strategy_limit },
+        hasBaseline,
+        { (strategy, limit) ->
+            strategy?.let {
+                val name = CONTEXT_STRATEGY_OPTION_LABELS[it] ?: it
+                if (limit != null) "Стратегия $name ($limit сообщений)" else "Стратегия $name"
+            }
+        },
+        "Стратегия контекста: не задана",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        memoryFlags(settings),
+        baseline?.let { memoryFlags(it) },
+        hasBaseline,
+        { flags -> if (flags[0]) memoryBadgeText(settings) else null },
+        "Память: выключена",
+    )?.let { add(it) }
+
+    diffBadgeText(
+        settings.task_tracking_enabled, baseline?.task_tracking_enabled, hasBaseline,
+        { if (it) "Задачи" else null },
+        "Задачи (Выкл.)",
+    )?.let { add(it) }
+
+    if (hasInvariants) add("Инварианты")
+
+    // Сравнивается набор имён функций, а не сырой JSON (иначе разное
+    // форматирование одного выбора считалось бы отличием).
+    diffBadgeText(
+        toolsKey(settings.tools_json),
+        baseline?.let { toolsKey(it.tools_json) },
+        hasBaseline,
+        { if (hasConfiguredTools(settings.tools_json)) "Инструменты" else null },
+        "Инструменты (Выкл.)",
+    )?.let { add(it) }
+
+    if (profileName != null) add("Профиль: $profileName")
+}
+
+/**
+ * Сводка настроек во всю ширину (экран чата): одна строка бейджей с «+N»,
+ * по нажатию — все бейджи с переносом.
+ */
 @Composable
 fun SettingsSummary(
     settings: Settings,
     baselineSettings: Settings? = null,
-    // Инварианты (ТЗ "Инварианты" — тумблер `invariants_enabled` убран):
-    // считаются разрешёнными сами по себе, если для этого агента/чата
-    // выбран хотя бы один инвариант (`Agent.invariant_ids`/`Chat.invariant_ids`,
-    // само поле не входит в Settings) — bool передаёт вызывающий экран.
     hasInvariants: Boolean = false,
     profileName: String? = null,
     modifier: Modifier = Modifier,
 ) {
-    // Один цвет на все бейджи — заливка как у пузыря сообщения пользователя
-    // в чате, обводка и текст — тёмный вариант того же тона (по замечанию
-    // пользователя); фиксированный, не зависит от темы приложения и не
-    // завязан на MaterialTheme.colorScheme, чтобы не задевать другие
-    // элементы (FAB, кнопки), использующие роли primary/secondary/tertiary.
-    val badgeColor = BadgeChatFill
-    val onBadgeColor = BadgeChatBorderAndText
-    val primary = badgeColor
-    val onPrimary = onBadgeColor
-    val secondary = badgeColor
-    val onSecondary = onBadgeColor
-    val tertiary = badgeColor
-    val onTertiary = onBadgeColor
-    val neutral = badgeColor
-    val onNeutral = onBadgeColor
-    val hasBaseline = baselineSettings != null
-
-    val badges = buildList<@Composable () -> Unit> {
-        diffBadgeText(
-            settings.temperature to settings.top_p,
-            baselineSettings?.let { it.temperature to it.top_p },
-            hasBaseline,
-            { (temperature, topP) ->
-                "Температура: ${formatSettingsNumber(temperature)} · top_p: ${formatSettingsNumber(topP)}"
-            },
-            null,
-        )?.let { text -> add { SettingsBadgeChip(text, primary, onPrimary) } }
-
-        diffBadgeText(
-            settings.seed, baselineSettings?.seed, hasBaseline,
-            { seed -> seed?.let { "Начальное число (seed): $it" } },
-            "Начальное число (seed): не задано",
-        )?.let { text -> add { SettingsBadgeChip(text, neutral, onNeutral) } }
-
-        diffBadgeText(
-            settings.stream, baselineSettings?.stream, hasBaseline,
-            { if (it) "Потоковые ответы" else null },
-            "Потоковые ответы (Выкл.)",
-        )?.let { text -> add { SettingsBadgeChip(text, neutral, onNeutral) } }
-
-        diffBadgeText(
-            settings.thinking_enabled, baselineSettings?.thinking_enabled, hasBaseline,
-            { if (it) "Рассуждения" else null },
-            "Рассуждения (Выкл.)",
-        )?.let { text -> add { SettingsBadgeChip(text, neutral, onNeutral) } }
-
-        diffBadgeText(
-            settings.reasoning_effort, baselineSettings?.reasoning_effort, hasBaseline,
-            { effort -> effort?.let { "Уровень рассуждений: $it" } },
-            "Уровень рассуждений: не задан",
-        )?.let { text -> add { SettingsBadgeChip(text, neutral, onNeutral) } }
-
-        diffBadgeText(
-            settings.max_tokens, baselineSettings?.max_tokens, hasBaseline,
-            { max -> max?.let { "Максимальное число токенов: $it" } },
-            "Максимальное число токенов: не задано",
-        )?.let { text -> add { SettingsBadgeChip(text, neutral, onNeutral) } }
-
-        diffBadgeText(
-            settings.json_mode, baselineSettings?.json_mode, hasBaseline,
-            { if (it) "Ответ в JSON" else null },
-            "Ответ в JSON (Выкл.)",
-        )?.let { text -> add { SettingsBadgeChip(text, neutral, onNeutral) } }
-
-        diffBadgeText(
-            settings.stop_sequences, baselineSettings?.stop_sequences, hasBaseline,
-            { seqs -> if (seqs.isNotEmpty()) "Стоп-последовательности: ${seqs.joinToString(", ")}" else null },
-            "Стоп-последовательности: нет",
-        )?.let { text -> add { SettingsBadgeChip(text, neutral, onNeutral) } }
-
-        diffBadgeText(
-            Triple(settings.autosummary, settings.autosummary_by_messages, settings.autosummary_by_tokens),
-            baselineSettings?.let { Triple(it.autosummary, it.autosummary_by_messages, it.autosummary_by_tokens) },
-            hasBaseline,
-            { (mode, byMessages, byTokens) ->
-                if (mode == "off") {
-                    null
-                } else {
-                    val (count, unit) = if (mode == "tokens") byTokens to "токенов" else byMessages to "сообщений"
-                    "Автоматическая суммаризация ($count $unit)"
-                }
-            },
-            "Автоматическая суммаризация выключена",
-        )?.let { text -> add { SettingsBadgeChip(text, tertiary, onTertiary) } }
-
-        diffBadgeText(
-            settings.context_strategy to settings.context_strategy_limit,
-            baselineSettings?.let { it.context_strategy to it.context_strategy_limit },
-            hasBaseline,
-            { (strategy, limit) ->
-                strategy?.let {
-                    val name = CONTEXT_STRATEGY_OPTION_LABELS[it] ?: it
-                    if (limit != null) "Стратегия $name ($limit сообщений)" else "Стратегия $name"
-                }
-            },
-            "Стратегия управления контекстом: не задана",
-        )?.let { text -> add { SettingsBadgeChip(text, secondary, onSecondary) } }
-
-        diffBadgeText(
-            memoryFlags(settings),
-            baselineSettings?.let { memoryFlags(it) },
-            hasBaseline,
-            { flags -> if (flags[0]) memoryBadgeText(settings) else null },
-            "Память: выключена",
-        )?.let { text -> add { SettingsBadgeChip(text, tertiary, onTertiary) } }
-
-        // "Задачи" и "Инварианты" — по аналогии с остальными настройками
-        // (замечание пользователя: на главном экране не было бейджа по
-        // настройке "Задачи" в списке агентов/чатов, по аналогии с другими
-        // настройками); идут сразу после бейджа памяти, перед бейджем профиля.
-        diffBadgeText(
-            settings.task_tracking_enabled, baselineSettings?.task_tracking_enabled, hasBaseline,
-            { if (it) "Задачи" else null },
-            "Задачи (Выкл.)",
-        )?.let { text -> add { SettingsBadgeChip(text, tertiary, onTertiary) } }
-
-        // Не через diffBadgeText: в отличие от прежнего булева тумблера,
-        // выбор инвариантов чата — НЕ копия/переопределение выбора агента
-        // (независимые списки, объединяются на лету), так что "изменилось
-        // относительно агента" здесь не имеет смысла — просто показываем,
-        // если у ЭТОГО владельца (агента или чата) выбран хотя бы один.
-        if (hasInvariants) {
-            add { SettingsBadgeChip("Инварианты", tertiary, onTertiary) }
-        }
-
-        // "Инструменты" (по замечанию пользователя) — если в настройках
-        // выбран хотя бы один инструмент (`tools_json`: выбор в «Выбрать из
-        // доступных» или ручной JSON). В строке чата в списке агентов —
-        // по той же логике, что и остальные настройки: только если набор
-        // инструментов чата отличается от набора агента; если чат их убрал,
-        // а у агента они есть — "Инструменты (Выкл.)". Сравнивается набор
-        // имён функций, а не сырой текст JSON (иначе разное форматирование
-        // одного и того же выбора считалось бы отличием).
-        diffBadgeText(
-            toolsKey(settings.tools_json),
-            baselineSettings?.let { toolsKey(it.tools_json) },
-            hasBaseline,
-            { if (hasConfiguredTools(settings.tools_json)) "Инструменты" else null },
-            "Инструменты (Выкл.)",
-        )?.let { text -> add { SettingsBadgeChip(text, tertiary, onTertiary) } }
-
-        // Профиль — сразу после бейджа памяти, справа от него, в том же ряду
-        // (по замечанию пользователя), а не отдельным блоком выше/ниже; не
-        // участвует в diff-сравнении с агентом.
-        if (profileName != null) add { ProfileBadge(name = profileName) }
+    val badges = settingsBadgeTexts(settings, baselineSettings, hasInvariants, profileName)
+    if (badges.isEmpty()) return
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    if (expanded) {
+        SettingsBadgeFlow(badges, onCollapse = { expanded = false }, modifier = modifier)
+    } else {
+        SettingsBadgeLine(badges, onExpand = { expanded = true }, modifier = modifier)
     }
+}
 
+/** Бейджи в одну строку: сколько поместится, остальные — «+N» (нажатие
+ * вызывает [onExpand]). Если не помещается даже первый бейдж целиком, он
+ * обрезается многоточием. */
+@Composable
+fun SettingsBadgeLine(badges: List<String>, onExpand: () -> Unit, modifier: Modifier = Modifier) {
+    if (badges.isEmpty()) return
+    SubcomposeLayout(modifier) { constraints ->
+        val maxWidth = constraints.maxWidth
+        val spacing = BadgeSpacing.roundToPx()
+        val loose = Constraints(maxWidth = maxWidth)
+        val measured = badges.mapIndexed { i, text ->
+            subcompose("badge$i") { SettingsBadge(text) }.first().measure(loose)
+        }
+        val totalWidth = measured.sumOf { it.width } + spacing * (measured.size - 1)
+        val placeables = if (totalWidth <= maxWidth) {
+            measured
+        } else {
+            // Ширина «+N» с запасом — по общему числу бейджей.
+            val moreWidth = subcompose("moreProbe") { MoreBadge(badges.size) {} }.first().measure(loose).width
+            var used = 0
+            var fit = 0
+            for (p in measured) {
+                val next = used + p.width + spacing
+                if (next + moreWidth > maxWidth) break
+                used = next
+                fit++
+            }
+            val shown = if (fit > 0) {
+                measured.take(fit)
+            } else {
+                // Не влезает даже первый — сжимаем его до оставшегося места.
+                val room = maxWidth - moreWidth - spacing
+                if (room > 24.dp.roundToPx()) {
+                    listOf(subcompose("first") { SettingsBadge(badges[0]) }.first().measure(Constraints(maxWidth = room)))
+                } else {
+                    emptyList()
+                }
+            }
+            val hidden = badges.size - shown.size
+            shown + subcompose("more") { MoreBadge(hidden, onExpand) }.first().measure(loose)
+        }
+        val height = placeables.maxOfOrNull { it.height } ?: 0
+        val width = (placeables.sumOf { it.width } + spacing * (placeables.size - 1))
+            .coerceIn(constraints.minWidth, maxWidth)
+        layout(width, height) {
+            var x = 0
+            placeables.forEach { p ->
+                p.placeRelative(x, (height - p.height) / 2)
+                x += p.width + spacing
+            }
+        }
+    }
+}
+
+/** Все бейджи с переносом строк и «Свернуть» в конце. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun SettingsBadgeFlow(badges: List<String>, onCollapse: () -> Unit, modifier: Modifier = Modifier) {
     FlowRow(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(BadgeSpacing),
+        verticalArrangement = Arrangement.spacedBy(BadgeSpacing),
     ) {
-        badges.forEach { badge -> badge() }
+        badges.forEach { SettingsBadge(it) }
+        ActionBadge("Свернуть", onCollapse)
+    }
+}
+
+/**
+ * Строка «название + бейджи»: название занимает сколько нужно, но не больше
+ * [maxNameFraction] ширины, бейджи ([SettingsBadgeLine]) — всё остальное.
+ */
+@Composable
+fun NameWithBadges(
+    name: @Composable () -> Unit,
+    badges: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    maxNameFraction: Float = 0.6f,
+) {
+    Layout(contents = listOf<@Composable () -> Unit>({ Box { name() } }, { Box { badges() } }), modifier = modifier) { (nameM, badgesM), constraints ->
+        val gap = 8.dp.roundToPx()
+        val maxWidth = constraints.maxWidth
+        val namePlaceable = nameM.first().measure(Constraints(maxWidth = (maxWidth * maxNameFraction).toInt()))
+        val room = (maxWidth - namePlaceable.width - gap).coerceAtLeast(0)
+        val badgesPlaceable = badgesM.first().measure(Constraints(maxWidth = room))
+        val height = maxOf(namePlaceable.height, badgesPlaceable.height)
+        val width = if (constraints.hasBoundedWidth) maxWidth else namePlaceable.width + gap + badgesPlaceable.width
+        layout(width.coerceAtLeast(constraints.minWidth), height) {
+            namePlaceable.placeRelative(0, (height - namePlaceable.height) / 2)
+            if (badgesPlaceable.width > 0) {
+                badgesPlaceable.placeRelative(namePlaceable.width + gap, (height - badgesPlaceable.height) / 2)
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsBadge(text: String, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = BadgeShape,
+        color = BadgeChatFill,
+        contentColor = BadgeChatBorderAndText,
+        border = BorderStroke(0.5.dp, BadgeChatBorder),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun MoreBadge(count: Int, onClick: () -> Unit) = ActionBadge("+$count", onClick)
+
+/** Бейдж-действие («+N», «Свернуть») — выделен цветом темы. */
+@Composable
+private fun ActionBadge(text: String, onClick: () -> Unit) {
+    Surface(
+        shape = BadgeShape,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = Modifier.clip(BadgeShape).clickable(onClick = onClick),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
     }
 }
 
 private val toolsJsonParser = Json { ignoreUnknownKeys = true }
 
 /** Выбран ли в `tools_json` хотя бы один инструмент: непустой JSON-массив.
- * "[]" (так «Выбрать из доступных» кодирует "ничего не выбрано") и пустая
- * строка — нет. Невалидный, но непустой текст считаем настроенным: сервер
- * всё равно попытается его использовать (и вернёт ошибку), скрывать это
- * бейджем было бы неверно. */
+ * "[]" и пустая строка — нет. Невалидный, но непустой текст считаем
+ * настроенным: сервер всё равно попытается его использовать. */
 fun hasConfiguredTools(toolsJson: String): Boolean {
     if (toolsJson.isBlank()) return false
     val parsed = runCatching { toolsJsonParser.parseToJsonElement(toolsJson) }.getOrNull() ?: return true
     return (parsed as? JsonArray)?.isNotEmpty() ?: true
 }
 
-/** Ключ сравнения выбора инструментов чата и агента: множество имён
- * функций из `tools_json`; невалидный JSON — сам текст (без пробелов по
- * краям); пусто/"[]" — пустое множество. */
+/** Ключ сравнения выбора инструментов: множество имён функций из
+ * `tools_json`; невалидный JSON — сам текст; пусто/"[]" — пустое множество. */
 private fun toolsKey(toolsJson: String): Any {
     if (!hasConfiguredTools(toolsJson)) return emptySet<String>()
     val array = runCatching { toolsJsonParser.parseToJsonElement(toolsJson) }.getOrNull() as? JsonArray
@@ -244,9 +365,7 @@ private fun toolsKey(toolsJson: String): Any {
     }.toSet()
 }
 
-/** Значения пяти флагов памяти (родительский тумблер + пять типов/слоёв) —
- * одним списком, чтобы одним сравнением `==` решить, отличается ли весь
- * набор памяти чата от набора агента (см. [diffBadgeText]). */
+/** Флаги памяти одним списком — одним сравнением решаем, отличается ли набор. */
 private fun memoryFlags(settings: Settings): List<Boolean> = listOf(
     settings.memory_tools_enabled,
     settings.working_memory_enabled,
@@ -256,14 +375,9 @@ private fun memoryFlags(settings: Settings): List<Boolean> = listOf(
     settings.procedural_memory_enabled,
 )
 
-/** Текст бейджа-настройки с поддержкой обычного и "diff"-режима:
- * - [hasBaseline] == false — бейдж строится как раньше, только по
- *   [currentValue] (через [textWhenSet]; `null` — не показывать).
- * - [hasBaseline] == true — бейдж показывается, только если [currentValue]
- *   отличается от [baselineValue]; если при этом [textWhenSet] всё равно
- *   вернул `null` (настройка отличается тем, что чат её выключил/сбросил),
- *   используется явный [textWhenUnset] вместо того, чтобы бейдж просто не
- *   появился — иначе расхождение с настройками агента было бы не видно. */
+/** Текст бейджа с базой сравнения: без базы — по [currentValue]; с базой —
+ * только если значение отличается, а выключение настройки показывается явным
+ * [textWhenUnset]. */
 private fun <T> diffBadgeText(
     currentValue: T,
     baselineValue: T?,
@@ -276,13 +390,7 @@ private fun <T> diffBadgeText(
     return textWhenSet(currentValue) ?: textWhenUnset
 }
 
-/** Текст бейджа "Память: ..." — перечисляет включённые типы/слои памяти в
- * том же порядке, что и на экране настроек (группа "Память" в
- * `SettingsFieldMeta.kt`): рабочая → долговременная → эпизодическая →
- * семантическая → процедурная. Показывается, только когда
- * `memory_tools_enabled == true` (см. вызов в [SettingsSummary]); если сама
- * настройка включена, а ни один тип почему-то не выбран (старые данные с
- * сервера) — короткая заглушка вместо пустого перечисления. */
+/** «Память: Рабочая, Долговременная» — включённые типы в порядке экрана настроек. */
 private fun memoryBadgeText(settings: Settings): String {
     val enabledTypes = buildList {
         if (settings.working_memory_enabled) add("Рабочая")
@@ -294,45 +402,8 @@ private fun memoryBadgeText(settings: Settings): String {
     return if (enabledTypes.isEmpty()) "Память: включена" else "Память: ${enabledTypes.joinToString(", ")}"
 }
 
-/** Бейдж подключённого профиля-пайплайна персонализации — тот же вид, что и
- * у остальных бейджей настроек (см. [BadgeChatFill]/[BadgeChatBorderAndText]
- * в Color.kt), чтобы все бейджи выглядели единообразно. Рисуется внутри
- * общего ряда бейджей [SettingsSummary] (сразу после бейджа памяти);
- * решение, показывать ли бейдж вообще (профиль подключён или нет),
- * принимает [SettingsSummary]. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ProfileBadge(name: String, modifier: Modifier = Modifier) {
-    AssistChip(
-        onClick = {},
-        modifier = modifier,
-        label = { Text("Профиль: $name", style = MaterialTheme.typography.labelSmall) },
-        colors = AssistChipDefaults.assistChipColors(
-            containerColor = BadgeChatFill,
-            labelColor = BadgeChatBorderAndText,
-        ),
-        border = BorderStroke(1.dp, BadgeChatBorder),
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingsBadgeChip(text: String, color: Color, labelColor: Color) {
-    AssistChip(
-        onClick = {},
-        label = { Text(text, style = MaterialTheme.typography.labelSmall) },
-        colors = AssistChipDefaults.assistChipColors(containerColor = color, labelColor = labelColor),
-        // Обводка того же тона, что и текст, но вдвое светлее (по замечанию
-        // пользователя) — а не стандартная AssistChip-обводка и не тот же
-        // тёмный цвет, что у текста.
-        border = BorderStroke(1.dp, BadgeChatBorder),
-    )
-}
-
-/** Компактное форматирование числа с плавающей точкой для бейджей/текста
- * настроек: целые значения — без дробной части (`1` вместо `1.0`), иначе —
- * не более двух знаков после запятой без хвостовых нулей (`0.7`, не `0.70`). */
+/** Число без лишних нулей: `1` вместо `1.0`, `0.7` вместо `0.70`. */
 private fun formatSettingsNumber(value: Double): String {
     if (value == value.toLong().toDouble()) return value.toLong().toString()
-    return "%.2f".format(value).trimEnd('0').trimEnd('.')
+    return String.format(Locale.US, "%.2f", value).trimEnd('0').trimEnd('.')
 }

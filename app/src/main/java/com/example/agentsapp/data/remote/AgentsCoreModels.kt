@@ -114,7 +114,7 @@ data class ModelInfo(
 data class ModelHealth(val model: String, val healthy: Boolean)
 
 @Serializable
-data class HealthResponse(val status: String, val version: String = "")
+data class HealthResponse(val status: String)
 
 @Serializable
 data class ChatStats(
@@ -164,6 +164,19 @@ data class Chat(
     // /chats/{id}/invariants) — итоговый набор, который увидит модель,
     // это объединение инвариантов агента и инвариантов самого чата.
     val invariant_ids: List<String> = emptyList(),
+    /** Кто создал чат: "app" | "scheduler" (планировщик) — пометка «по расписанию». */
+    val source: String = "app",
+    /** Идущий сейчас запуск в этом чате (ответ модели или Менеджер задач), если есть. */
+    val active_run: RunBrief? = null,
+    /** Непрочитанные: ответы ассистента и запросы планировщика новее отметки прочтения. */
+    val unread_count: Int = 0,
+    /** К нему экран чата прокручивает при открытии (разделитель «Новые сообщения»). */
+    val first_unread_message_id: Long? = null,
+    val last_read_message_id: Long = 0,
+    /** Время последнего сообщения — для сортировки «непрочитанные выше». */
+    val last_message_at: Long? = null,
+    /** Начало последнего сообщения (до 120 символов) — строка чата на главном экране. */
+    val preview: String? = null,
 )
 
 @Serializable
@@ -176,7 +189,7 @@ data class AgentWithChats(
 data class Message(
     val id: Long,
     val chat_id: String,
-    val role: String, // "user" | "assistant" | "error"
+    val role: String, // "user" | "assistant"
     val content: String,
     val created_at: Long,
     val reasoning_content: String? = null,
@@ -196,26 +209,24 @@ data class Message(
     // как TaskEvent (см. ниже). null/пусто — за этот ответ ни одна задача не
     // менялась.
     val task_events: String? = null,
-    // Новое ТЗ (интеграция с MCP-сервером) — тот же принцип, что и у
-    // task_events выше, но для вызовов через ОТДЕЛЬНЫЙ MCP-сервер: JSON-массив
-    // [{"type":"mcp_call","name","status":"started"|"finished","ok","error"}]
-    // (десериализуется как McpCallEvent, см. ниже), накопленный за весь обмен,
-    // который сформировал ЭТО сообщение ассистента. Отдельное от task_events
-    // поле — разные источники событий. null/пусто — за этот ответ ни один
-    // MCP-инструмент не вызывался.
-    val mcp_events: String? = null,
-    // "Менеджер задач" (обновление "Дня 13") — `true`, если это сообщение
-    // ассистента сгенерировано автономным шагом (см. `POST
-    // /chats/{chat_id}/tasks/{task_id}/task-manager/step`), а не ответом на
+    // "Менеджер задач" — `true`, если это сообщение ассистента
+    // сгенерировано автономным шагом (запуск `POST
+    // /chats/{chat_id}/tasks/{task_id}/runs`), а не ответом на
     // реальное сообщение пользователя. Клиент показывает такие сообщения с
     // пометкой "Менеджер задач" (см. MessageBadges в ChatScreen.kt).
     val is_task_manager_step: Boolean = false,
-)
-
-@Serializable
-data class SendMessageResponse(
-    val user_message: Message,
-    val assistant_message: Message,
+    /** "complete" — обычное сообщение; "streaming" — черновик идущего ответа
+     * (его показывает DraftBubble по событиям запуска, в списке он скрыт);
+     * "cancelled" | "interrupted" | "failed" — остановлен / прерван
+     * перезапуском сервера / ошибка (текст в [error]). */
+    val status: String = "complete",
+    val run_id: String? = null,
+    /** JSON-массив вызовов ВСЕХ инструментов за этот ответ ([ToolCallEvent]):
+     * MCP, память, задачи, скиллы. null/пусто — инструменты не вызывались. */
+    val tool_events: String? = null,
+    val error: String? = null,
+    /** Кто отправил сообщение пользователя: "app" | "scheduler". */
+    val source: String = "app",
 )
 
 @Serializable
@@ -241,24 +252,6 @@ data class ChatCopyRequest(val title: String)
 
 @Serializable
 data class ChatRenameRequest(val title: String)
-
-@Serializable
-data class SendMessageRequest(
-    val text: String,
-    val get_facts: Boolean = false,
-    val sliding_window: Boolean = false,
-    val autosummary: String = "off",
-    val branch: Int? = null,
-)
-
-@Serializable
-data class StreamSendMessageRequest(
-    val text: String,
-    val get_facts: Boolean = false,
-    val sliding_window: Boolean = false,
-    val autosummary: String = "off",
-    val branch: Int? = null,
-)
 
 @Serializable
 data class BulkDeleteRequest(val ids: List<Long>)
@@ -552,64 +545,12 @@ data class TaskEvent(
     val kind: String? = null,
 )
 
-/** Один элемент `Message.mcp_events` (см. поле выше) — тот же вызов, что
- * приходит инлайн по SSE как [AgentStreamEvent.McpCall]/[TaskManagerStepEvent.McpCall]
- * во время генерации, здесь — уже накопленный и привязанный к конкретному
- * сохранённому сообщению (см. `ChatScreen.kt`, `McpCallChips`). `ok`/`error`
- * пусты для `status == "started"` (результат ещё не известен). */
-@Serializable
-data class McpCallEvent(
-    val type: String = "mcp_call",
-    val name: String,
-    val status: String, // "started" | "finished"
-    val ok: Boolean? = null,
-    val error: String? = null,
-)
-
 // ---- тела запросов ----------------------------------------------------------
 
 /** Ручное вмешательство человека, БЕЗ обращения к модели — единственное
  * оставшееся ручное действие: "Пауза" (`action` == "pause", любое другое
- * значение сервер отвечает ошибкой 400). Кнопка "Продолжить"/"Выполнить"
- * ВСЕГДА обращается к модели — см. [TaskManagerStepRequest] вместо этого
- * запроса. */
+ * значение сервер отвечает ошибкой 400). Кнопки "Продолжить"/"Выполнить"
+ * ВСЕГДА обращаются к модели — это запуск Менеджера задач
+ * (`POST /chats/{chat_id}/tasks/{task_id}/runs`). */
 @Serializable
 data class TaskManualActionRequest(val action: String, val note: String? = null)
-
-/** Тело запроса шага "Менеджера задач" (редизайн, замечание пользователя):
- * [auto_pause] = true (по умолчанию, кнопка "Продолжить") — один шаг, потом
- * снова пауза; [auto_pause] = false (кнопка "Выполнить") — без остановок до
- * состояния done, клиент вызывает эндпоинт в цикле, пока не придёт
- * `should_continue = false`; пользователь может прервать цикл в любой
- * момент отдельным вызовом ручного действия "Пауза". */
-@Serializable
-data class TaskManagerStepRequest(val auto_pause: Boolean = true)
-
-/** Один разобранный элемент потока `POST .../messages/stream` (SSE). */
-sealed class AgentStreamEvent {
-    /** Статус фазы выполнения запроса ("Выполняется запрос к модели",
-     * "Обновление фактов" и т.п.) — показывается в чате вместо нейтрального
-     * "Модель рассуждает…". */
-    data class Status(val status: String) : AgentStreamEvent()
-    data class Delta(val content: String, val reasoningContent: String) : AgentStreamEvent()
-    /** Новое ТЗ (интеграция с MCP-сервером) — вызов инструмента через
-     * отдельный MCP-сервер, инлайн по ходу генерации (до `Done`, который несёт
-     * тот же список целиком в `Message.mcp_events`) — клиент показывает
-     * "Инструмент: <name>" сразу, не дожидаясь конца ответа. */
-    data class McpCall(val name: String, val status: String, val ok: Boolean?, val error: String?) : AgentStreamEvent()
-    data class Done(val message: Message) : AgentStreamEvent()
-    data class Error(val message: String) : AgentStreamEvent()
-}
-
-/** Один разобранный элемент потока `POST .../task-manager/step` (SSE) —
- * "Менеджер задач" (обновление "Дня 13"): те же фазы, что и у
- * [AgentStreamEvent], но `Done` дополнительно несёт [Done.shouldContinue]
- * (клиент должен сам вызвать эндпоинт ещё раз, если true) и
- * [Done.taskStatus] — актуальный статус задачи после шага. */
-sealed class TaskManagerStepEvent {
-    data class Status(val status: String) : TaskManagerStepEvent()
-    data class Delta(val content: String, val reasoningContent: String) : TaskManagerStepEvent()
-    data class McpCall(val name: String, val status: String, val ok: Boolean?, val error: String?) : TaskManagerStepEvent()
-    data class Done(val message: Message, val shouldContinue: Boolean, val taskStatus: String) : TaskManagerStepEvent()
-    data class Error(val message: String) : TaskManagerStepEvent()
-}

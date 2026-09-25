@@ -16,7 +16,6 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -68,6 +67,13 @@ class AgentsCoreApiClient(
             .build()
     }
 
+    /** Клиент для долгих SSE-подписок: сервер шлёт пинги каждые 15 секунд,
+     * поэтому таймаут чтения — с запасом, но не бесконечный (обрыв сети
+     * обнаруживается и подписка переподключается). */
+    private val streamingClient: OkHttpClient = client.newBuilder()
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
+
     private fun url(path: String): String = "${baseUrlProvider()}$path"
 
     private fun requestBuilder(path: String): Request.Builder =
@@ -79,12 +85,21 @@ class AgentsCoreApiClient(
 
     suspend fun listModels(): List<ModelInfo> = get("models", ListSerializer(ModelInfo.serializer()))
 
+    /** Инструменты всех MCP-серверов, подключённых к AgentsCore (`GET /mcp/tools`) —
+     * для выбора инструментов в настройках агента/чата. Имена — ровно те, под
+     * которыми AgentsCore предлагает инструменты модели. */
+    suspend fun listMcpTools(): List<McpToolDescription> = get("mcp/tools", ListSerializer(McpToolDescription.serializer()))
+
     suspend fun modelHealth(modelId: String): ModelHealth =
         get("model/$modelId/health", ModelHealth.serializer())
 
     // ---- Настройки по умолчанию ----------------------------------------------
 
     suspend fun getDefaultSettings(): DefaultSettings = get("settings/default", DefaultSettings.serializer())
+
+    /** Полные настройки, которые получит новый агент, — база сравнения для
+     * бейджей агентов на главном экране. */
+    suspend fun getNewAgentSettings(): Settings = get("settings/default/agent", Settings.serializer())
 
     suspend fun updateDefaultSettings(patch: Map<String, JsonElement>): DefaultSettings =
         putJson("settings/default", patch, DefaultSettings.serializer())
@@ -328,57 +343,64 @@ class AgentsCoreApiClient(
         executeNoContentRequest(request)
     }
 
-    suspend fun sendMessage(
+    // ---- Асинхронные запуски, непрочитанные, общая лента (ТЗ «асинхронные ответы») ----
+
+    /** Отправить сообщение: сервер сразу возвращает запуск, сообщение
+     * пользователя и черновик ответа; сама генерация идёт в фоне. `409` —
+     * в чате уже формируется ответ. [clientRequestId] — ключ
+     * идемпотентности (повтор после сбоя сети не создаёт второй запрос). */
+    suspend fun createMessageRun(
         chatId: String,
         text: String,
         getFacts: Boolean = false,
         slidingWindow: Boolean = false,
         autosummary: String = "off",
         branch: Int? = null,
-    ): SendMessageResponse =
+        clientRequestId: String? = null,
+    ): RunCreated =
         post(
-            "chats/$chatId/messages",
-            SendMessageRequest(
-                text = text,
-                get_facts = getFacts,
-                sliding_window = slidingWindow,
-                autosummary = autosummary,
-                branch = branch,
+            "chats/$chatId/runs",
+            RunCreateRequest(
+                text = text, get_facts = getFacts, sliding_window = slidingWindow,
+                autosummary = autosummary, branch = branch, client_request_id = clientRequestId,
             ),
-            SendMessageResponse.serializer(),
+            RunCreated.serializer(),
         )
 
-    /** Передаёт тело `text/event-stream` эндпоинта
-     * `POST /chats/{id}/messages/stream` в виде потока [AgentStreamEvent].
-     * AgentsCore сохраняет сообщение пользователя и итоговый ответ ассистента
-     * на своей стороне; здесь только ретранслируются кадры SSE. `getFacts` и
-     * `autosummary` поддерживаются и в потоковом режиме — обновление фактов и
-     * (если нужно) автосуммаризация запускаются сервером только после того,
-     * как потоковая генерация полностью завершена (см. события `status`). */
-    fun streamMessage(
-        chatId: String,
-        text: String,
-        getFacts: Boolean = false,
-        slidingWindow: Boolean = false,
-        autosummary: String = "off",
-        branch: Int? = null,
-    ): Flow<AgentStreamEvent> = callbackFlow {
-        val body = json.encodeToString(
-            StreamSendMessageRequest.serializer(),
-            StreamSendMessageRequest(
-                text = text,
-                get_facts = getFacts,
-                sliding_window = slidingWindow,
-                autosummary = autosummary,
-                branch = branch,
-            ),
-        )
-        val httpRequest = requestBuilder("chats/$chatId/messages/stream")
+    /** Менеджер задач: [autoPause] = true — один шаг («Продолжить»), false —
+     * шаги подряд до завершения задачи на сервере («Выполнить»). */
+    suspend fun createTaskRun(chatId: String, taskId: String, autoPause: Boolean, clientRequestId: String? = null): RunCreated =
+        post("chats/$chatId/tasks/$taskId/runs", TaskRunCreateRequest(autoPause, clientRequestId), RunCreated.serializer())
+
+    suspend fun getRun(runId: String): RunSnapshot = get("runs/$runId", RunSnapshot.serializer())
+
+    suspend fun cancelRun(runId: String): Run = post("runs/$runId/cancel", null, Run.serializer())
+
+    suspend fun listActiveRuns(): List<Run> = get("runs?active=true", ListSerializer(Run.serializer()))
+
+    suspend fun markChatRead(chatId: String, messageId: Long): ChatActivity =
+        post("chats/$chatId/read", ChatReadRequest(messageId), ChatActivity.serializer())
+
+    suspend fun eventsCursor(): EventsCursor = get("events/cursor", EventsCursor.serializer())
+
+    /** События запуска с номера [after] (SSE): сначала пропущенные, потом
+     * вживую; поток закрывается после итогового события. `410` (лента уже
+     * удалена на сервере) приходит как [RunEvent.Gone]. */
+    fun runEvents(runId: String, after: Long): Flow<RunEvent> =
+        sseFlow("runs/$runId/events?after=$after", onGone = { RunEvent.Gone }) { parseRunEvent(it) }
+
+    /** Общая лента изменений (SSE) с номера [after]; `410` — [GlobalEvent.Gone]. */
+    fun globalEvents(after: Long): Flow<GlobalEvent> =
+        sseFlow("events?after=$after", onGone = { GlobalEvent.Gone }) { parseGlobalEvent(it) }
+
+    /** Общий читатель SSE (GET): строки `data: {...}` → [parse]; служебные
+     * пинги сервера (строки-комментарии) пропускаются. */
+    private fun <T : Any> sseFlow(path: String, onGone: () -> T, parse: (JsonObject) -> T?): Flow<T> = callbackFlow {
+        val httpRequest = requestBuilder(path)
             .header("Accept", "text/event-stream")
-            .post(body.toRequestBody(JSON_MEDIA_TYPE.toMediaType()))
+            .get()
             .build()
-
-        val call = client.newCall(httpRequest)
+        val call = streamingClient.newCall(httpRequest)
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 close(AgentUnreachableException(e))
@@ -386,6 +408,11 @@ class AgentsCoreApiClient(
 
             override fun onResponse(call: Call, response: Response) {
                 response.use { resp ->
+                    if (resp.code == 410) {
+                        trySend(onGone())
+                        close()
+                        return
+                    }
                     if (!resp.isSuccessful) {
                         val raw = resp.body?.string()
                         close(AgentApiException(resp.code, extractErrorMessage(raw)))
@@ -401,7 +428,8 @@ class AgentsCoreApiClient(
                             if (!line.startsWith("data:")) continue
                             val data = line.removePrefix("data:").trim()
                             if (data.isEmpty()) continue
-                            parseStreamEvent(data)?.let { trySend(it) }
+                            val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: continue
+                            parse(obj)?.let { trySend(it) }
                         }
                     } catch (e: IOException) {
                         close(e)
@@ -411,113 +439,89 @@ class AgentsCoreApiClient(
                 }
             }
         })
-
         awaitClose { call.cancel() }
     }.flowOn(Dispatchers.IO)
 
-    /** "Менеджер задач" (редизайн, замечание пользователя): один автономный
-     * шаг без нового сообщения пользователя, тот же формат SSE, что и у
-     * [streamMessage] — см. `POST /chats/{chat_id}/tasks/{task_id}/task-manager/step`
-     * на сервере. [autoPause] = true (по умолчанию, кнопка "Продолжить") —
-     * один шаг и снова пауза; false (кнопка "Выполнить") — без остановок до
-     * done, вызывающий код сам повторяет вызов в цикле, пока `shouldContinue`
-     * не станет false. Отмена сбора этого [Flow] (например, при нажатии
-     * "Пауза" во время цикла "Выполнить") закрывает HTTP-соединение через
-     * `awaitClose { call.cancel() }` — на сервере нет настоящей отмены
-     * генерации, но клиент прекращает ждать и должен отдельно вызвать
-     * ручное действие "pause" (см. [applyTaskActionManually]), чтобы задача
-     * формально считалась на паузе и на сервере. */
-    fun stepTaskManager(chatId: String, taskId: String, autoPause: Boolean = true): Flow<TaskManagerStepEvent> = callbackFlow {
-        val bodyJson = json.encodeToString(TaskManagerStepRequest.serializer(), TaskManagerStepRequest(autoPause))
-        val httpRequest = requestBuilder("chats/$chatId/tasks/$taskId/task-manager/step")
-            .header("Accept", "text/event-stream")
-            .post(bodyJson.toRequestBody(JSON_MEDIA_TYPE.toMediaType()))
-            .build()
+    private fun JsonObject.seq(): Long = (this["seq"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
 
-        val call = client.newCall(httpRequest)
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                close(AgentUnreachableException(e))
-            }
+    private fun JsonObject.bool(key: String): Boolean? = (this[key] as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
 
-            override fun onResponse(call: Call, response: Response) {
-                response.use { resp ->
-                    if (!resp.isSuccessful) {
-                        val raw = resp.body?.string()
-                        close(AgentApiException(resp.code, extractErrorMessage(raw)))
-                        return
-                    }
-                    val source = resp.body?.source() ?: run {
-                        close()
-                        return
-                    }
-                    try {
-                        while (!source.exhausted()) {
-                            val line = source.readUtf8Line() ?: break
-                            if (!line.startsWith("data:")) continue
-                            val data = line.removePrefix("data:").trim()
-                            if (data.isEmpty()) continue
-                            parseTaskManagerStepEvent(data)?.let { trySend(it) }
-                        }
-                    } catch (e: IOException) {
-                        close(e)
-                        return
-                    }
-                    close()
-                }
-            }
-        })
+    private fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.content?.toLongOrNull()
 
-        awaitClose { call.cancel() }
-    }.flowOn(Dispatchers.IO)
+    private fun decodeMessage(element: JsonElement?): Message? {
+        if (element == null || element is JsonNull || element !is JsonObject) return null
+        return runCatching { json.decodeFromJsonElement(Message.serializer(), element) }.getOrNull()
+    }
 
-    private fun parseTaskManagerStepEvent(data: String): TaskManagerStepEvent? {
-        val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return null
-        return when (obj["type"]?.jsonPrimitive?.content) {
-            "status" -> TaskManagerStepEvent.Status(status = obj["status"].stringOrNull().orEmpty())
-            "delta" -> TaskManagerStepEvent.Delta(
+    private fun parseRunEvent(obj: JsonObject): RunEvent? {
+        val seq = obj.seq()
+        return when (obj["type"].stringOrNull()) {
+            "run_started" -> RunEvent.Started(seq, decodeMessage(obj["assistant_message"]))
+            "status" -> RunEvent.Status(seq, obj["status"].stringOrNull().orEmpty())
+            "delta" -> RunEvent.Delta(
+                seq,
                 content = obj["content"].stringOrNull().orEmpty(),
                 reasoningContent = obj["reasoning_content"].stringOrNull().orEmpty(),
             )
-            "mcp_call" -> TaskManagerStepEvent.McpCall(
-                name = obj["name"].stringOrNull().orEmpty(),
-                status = obj["status"].stringOrNull().orEmpty(),
-                ok = (obj["ok"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull(),
-                error = obj["error"].stringOrNull(),
+            "tool_call" -> RunEvent.ToolCall(
+                seq,
+                ToolCallEvent(
+                    name = obj["name"].stringOrNull().orEmpty(),
+                    source = obj["source"].stringOrNull() ?: "unknown",
+                    group = obj["group"].stringOrNull(),
+                    status = obj["status"].stringOrNull().orEmpty(),
+                    ok = obj.bool("ok"),
+                    error = obj["error"].stringOrNull(),
+                ),
             )
-            "done" -> obj["message"]?.let {
-                runCatching { json.decodeFromJsonElement(Message.serializer(), it) }.getOrNull()
-            }?.let {
-                TaskManagerStepEvent.Done(
-                    message = it,
-                    shouldContinue = (obj["should_continue"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false,
-                    taskStatus = obj["task_status"].stringOrNull() ?: "active",
-                )
-            }
-            "error" -> TaskManagerStepEvent.Error(obj["message"].stringOrNull() ?: "unknown error")
-            else -> null
+            "task_event" -> runCatching { json.decodeFromJsonElement(TaskEvent.serializer(), obj) }.getOrNull()
+                ?.let { RunEvent.Task(seq, it) }
+            "message_saved" -> RunEvent.MessageSaved(seq, decodeMessage(obj["message"]))
+            "message_started" -> RunEvent.MessageStarted(seq, decodeMessage(obj["assistant_message"]))
+            "task_step_done" -> RunEvent.TaskStepDone(
+                seq, taskStatus = obj["task_status"].stringOrNull(), shouldContinue = obj.bool("should_continue") ?: false,
+            )
+            "done" -> RunEvent.Done(seq, decodeMessage(obj["message"]))
+            "cancelled" -> RunEvent.Cancelled(seq, decodeMessage(obj["message"]))
+            "error" -> RunEvent.Error(
+                seq,
+                message = obj["message"].stringOrNull() ?: "Ошибка",
+                assistantMessage = decodeMessage(obj["assistant_message"]),
+            )
+            "gone" -> RunEvent.Gone
+            else -> RunEvent.Other(seq)
         }
     }
 
-    private fun parseStreamEvent(data: String): AgentStreamEvent? {
-        val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return null
-        return when (obj["type"]?.jsonPrimitive?.content) {
-            "status" -> AgentStreamEvent.Status(status = obj["status"].stringOrNull().orEmpty())
-            "delta" -> AgentStreamEvent.Delta(
-                content = obj["content"].stringOrNull().orEmpty(),
-                reasoningContent = obj["reasoning_content"].stringOrNull().orEmpty(),
+    private fun parseGlobalEvent(obj: JsonObject): GlobalEvent? {
+        val seq = obj.seq()
+        val chatId = obj["chat_id"].stringOrNull().orEmpty()
+        fun chat(): Chat? = (obj["chat"] as? JsonObject)?.let {
+            runCatching { json.decodeFromJsonElement(Chat.serializer(), it) }.getOrNull()
+        }
+        return when (obj["type"].stringOrNull()) {
+            "chat_created" -> GlobalEvent.ChatCreated(seq, chat(), chatId)
+            "chat_updated" -> GlobalEvent.ChatUpdated(seq, chat(), chatId)
+            "chat_deleted" -> GlobalEvent.ChatDeleted(seq, chatId)
+            "run_started" -> GlobalEvent.RunStarted(
+                seq, chatId,
+                (obj["run"] as? JsonObject)?.let { runCatching { json.decodeFromJsonElement(RunBrief.serializer(), it) }.getOrNull() },
             )
-            "mcp_call" -> AgentStreamEvent.McpCall(
-                name = obj["name"].stringOrNull().orEmpty(),
-                status = obj["status"].stringOrNull().orEmpty(),
-                ok = (obj["ok"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull(),
-                error = obj["error"].stringOrNull(),
+            "run_status" -> GlobalEvent.RunStatus(
+                seq, chatId, obj["run_id"].stringOrNull().orEmpty(), obj["current_status"].stringOrNull(),
             )
-            "done" -> obj["message"]?.let {
-                runCatching { json.decodeFromJsonElement(Message.serializer(), it) }.getOrNull()
-            }?.let { AgentStreamEvent.Done(it) }
-            "error" -> AgentStreamEvent.Error(obj["message"].stringOrNull() ?: "unknown error")
-            else -> null
+            "run_finished" -> GlobalEvent.RunFinished(
+                seq, chatId, obj["run_id"].stringOrNull().orEmpty(), obj["status"].stringOrNull().orEmpty(),
+            )
+            "unread_changed" -> GlobalEvent.UnreadChanged(
+                seq, chatId,
+                unreadCount = obj.long("unread_count")?.toInt() ?: 0,
+                firstUnreadMessageId = obj.long("first_unread_message_id"),
+                lastMessageAt = obj.long("last_message_at"),
+                preview = obj["preview"].stringOrNull(),
+            )
+            "gone" -> GlobalEvent.Gone
+            else -> GlobalEvent.Other(seq)
         }
     }
 
@@ -578,8 +582,9 @@ class AgentsCoreApiClient(
         is ChatCreateRequest -> ChatCreateRequest.serializer()
         is ChatCopyRequest -> ChatCopyRequest.serializer()
         is ChatRenameRequest -> ChatRenameRequest.serializer()
-        is SendMessageRequest -> SendMessageRequest.serializer()
-        is StreamSendMessageRequest -> StreamSendMessageRequest.serializer()
+        is RunCreateRequest -> RunCreateRequest.serializer()
+        is TaskRunCreateRequest -> TaskRunCreateRequest.serializer()
+        is ChatReadRequest -> ChatReadRequest.serializer()
         is BulkDeleteRequest -> BulkDeleteRequest.serializer()
         is BranchCreateRequest -> BranchCreateRequest.serializer()
         is WorkingMemorySaveRequest -> WorkingMemorySaveRequest.serializer()

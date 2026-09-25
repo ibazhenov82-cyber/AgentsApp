@@ -3,18 +3,19 @@ package com.example.agentsapp.ui.chat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agentsapp.data.remote.AgentApiException
-import com.example.agentsapp.data.remote.AgentStreamEvent
 import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.Branch
 import com.example.agentsapp.data.remote.Chat
 import com.example.agentsapp.data.remote.ChatStats
-import com.example.agentsapp.data.remote.McpCallEvent
 import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.Settings
-import com.example.agentsapp.data.remote.TaskManagerStepEvent
+import com.example.agentsapp.data.remote.TaskEvent
 import com.example.agentsapp.data.remote.TaskSummary
+import com.example.agentsapp.data.remote.ToolCallEvent
 import com.example.agentsapp.data.repository.AgentsCoreRepository
+import com.example.agentsapp.data.repository.ChatRunState
+import com.example.agentsapp.data.repository.RunsRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +29,9 @@ import kotlinx.coroutines.launch
  * экране настроек — см. `SettingsViewModel`). */
 private const val RENAME_DEBOUNCE_MS = 500L
 
+/** Задержка отметки прочтения после показа новых сообщений. */
+private const val MARK_READ_DELAY_MS = 1_000L
+
 /** Черновик ответа ассистента, накапливаемый по кадрам потока (SSE), пока
  * не пришёл финальный кадр `done` с уже сохранённым на сервере сообщением.
  * Блок рассуждений во время стриминга не показывается (замечание 15) —
@@ -40,12 +44,19 @@ data class StreamingDraft(
      * "Обновление фактов" и т.п.), приходит событиями `status` от сервера —
      * показывается вместо контента, пока `content` ещё пуст (см. [DraftBubble]). */
     val status: String = "Выполняется запрос к модели",
-    /** Новое ТЗ (интеграция с MCP-сервером) — вызовы через MCP-сервер по
-     * ходу ЭТОЙ генерации, в порядке поступления (started, потом finished
-     * для того же имени как отдельный элемент — не заменяет started, чтобы
-     * в UI было видно оба момента, см. [McpCallChips]). Финальный список за
-     * весь обмен приходит отдельно в `Message.mcp_events` (после `Done`). */
-    val mcpCalls: List<McpCallEvent> = emptyList(),
+    /** Вызовы ВСЕХ инструментов по ходу этого ответа (started, затем finished
+     * того же вызова) — строки «Использую инструмент …» в черновике. */
+    val toolCalls: List<ToolCallEvent> = emptyList(),
+    val taskEvents: List<TaskEvent> = emptyList(),
+)
+
+/** Черновик ответа из состояния запуска (см. [RunsRepository]). */
+private fun ChatRunState.toDraft(): StreamingDraft = StreamingDraft(
+    content = content,
+    reasoningContent = reasoning,
+    status = currentStatus ?: if (status == "queued") "Запрос в очереди" else "Выполняется запрос к модели",
+    toolCalls = toolCalls,
+    taskEvents = taskEvents,
 )
 
 /** Id-заглушка для оптимистично показанного сообщения пользователя — до
@@ -91,9 +102,18 @@ data class ChatUiState(
     val branches: List<Branch> = emptyList(),
     /** 0 — основная ветка. */
     val selectedBranch: Int = 0,
-    /** Черновик потокового ответа ассистента — показывается как временное
-     * сообщение в самом низу списка, пока идёт стриминг. */
+    /** Черновик ответа ассистента из идущего запуска — показывается как
+     * временное сообщение в самом низу списка, пока ответ формируется (в
+     * том числе если экран открыли уже посреди ответа). */
     val streamingDraft: StreamingDraft? = null,
+    /** Идущий запуск в этом чате (ответ или Менеджер задач), null — нет. */
+    val activeRunId: String? = null,
+    /** Первое непрочитанное на момент открытия чата — перед ним рисуется
+     * разделитель «Новые сообщения»; остаётся до ухода с экрана. */
+    val firstUnreadMessageId: Long? = null,
+    /** Разовая прокрутка к сообщению (первому непрочитанному) при открытии;
+     * экран сбрасывает её через [ChatViewModel.consumeScrollTarget]. */
+    val scrollToMessageId: Long? = null,
     val inputText: String = "",
     val isSending: Boolean = false,
     /** Отдельный флаг для суммаризации (замечание 14) — блокирует поле
@@ -133,7 +153,10 @@ data class ChatUiState(
     val errorMessage: String? = null,
 ) {
     val isSelectionMode: Boolean get() = selectedIds.isNotEmpty()
-    val isBusy: Boolean get() = isSending || isSummarizing || taskManagerActiveTaskId != null
+    val isBusy: Boolean get() = isSending || isSummarizing || activeRunId != null
+
+    /** В чате формируется ответ — вместо «Отправить» показывается «Остановить». */
+    val isGenerating: Boolean get() = activeRunId != null
 
     /** Кнопка суммаризации недоступна: нет сообщений, сервер сам считает
      * суммаризацию невозможной, или прямо сейчас идёт отправка/получение/суммаризация. */
@@ -151,6 +174,7 @@ data class ChatUiState(
 class ChatViewModel(
     private val chatId: String,
     private val repository: AgentsCoreRepository,
+    private val runsRepository: RunsRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ChatUiState())
@@ -170,19 +194,74 @@ class ChatViewModel(
      * редактирование наименования чата"). */
     private var renameJob: Job? = null
 
-    /** Корутина текущего шага/цикла "Менеджера задач" (см.
-     * [startTaskManagerRun]) — не более одной одновременно (пункт 2.6
-     * обновлённой концепции: в рамках одного чата обычно ведётся не более
-     * одной активной задачи одновременно). Отмена этой корутины (кнопка
-     * "Пауза" — см. [pauseTask]) закрывает и текущее
-     * SSE-соединение, если шаг в этот момент как раз стримится (см.
-     * `AgentsCoreApiClient.stepTaskManager`) — настоящей отмены генерации на
-     * сервере нет (как и у обычной отправки), но клиент прекращает ждать и
-     * дальше цикл не продолжает. */
-    private var taskManagerJob: Job? = null
+    /** Отложенная отметка прочтения (не чаще раза в секунду). */
+    private var markReadJob: Job? = null
+
+    /** Экран чата сейчас виден (между onStart и onStop) — только тогда
+     * сообщения отмечаются прочитанными. */
+    private var screenVisible = false
+
+    /** Прокрутка к первому непрочитанному — только при первом открытии. */
+    private var initialScrollDone = false
 
     init {
         load()
+        // Черновик идущего ответа — из запуска, который держит RunsRepository
+        // (подписка живёт дольше этого экрана).
+        viewModelScope.launch {
+            runsRepository.observe(chatId).collect { run -> applyRunState(run) }
+        }
+        // Сообщения чата изменились на сервере (ответ закончился, шаг
+        // Менеджера задач готов, пришёл запрос планировщика).
+        viewModelScope.launch {
+            runsRepository.chatRefresh.collect { changedChatId ->
+                if (changedChatId == chatId) refreshChatAndMessages()
+            }
+        }
+    }
+
+    private fun applyRunState(run: ChatRunState?) {
+        _state.update {
+            val isTaskRun = run != null && (run.kind == "task_step" || run.kind == "task_run")
+            it.copy(
+                activeRunId = run?.runId,
+                streamingDraft = run?.toDraft(),
+                taskManagerActiveTaskId = if (isTaskRun) run?.taskId else null,
+                taskManagerAutoPause = run?.kind != "task_run",
+            )
+        }
+    }
+
+    /** Экран чата стал виден/скрыт — для отметки прочтения и чтобы
+     * «Новый ответ» для этого чата не показывался всплывающим сообщением. */
+    fun onScreenVisible(visible: Boolean) {
+        screenVisible = visible
+        if (visible) {
+            runsRepository.openChatId = chatId
+            viewModelScope.launch { refreshChatAndMessages() }
+        } else if (runsRepository.openChatId == chatId) {
+            runsRepository.openChatId = null
+        }
+    }
+
+    override fun onCleared() {
+        if (runsRepository.openChatId == chatId) runsRepository.openChatId = null
+        super.onCleared()
+    }
+
+    /** Отметка «прочитано» до последнего показанного финального сообщения —
+     * с задержкой около секунды, чтобы не слать запрос на каждое сообщение. */
+    private fun scheduleMarkRead() {
+        if (!screenVisible) return
+        val lastShown = allMessages.filter { it.status != "streaming" && it.id > 0 }.maxOfOrNull { it.id } ?: return
+        val alreadyRead = chat?.last_read_message_id ?: 0L
+        if (lastShown <= alreadyRead) return
+        markReadJob?.cancel()
+        markReadJob = viewModelScope.launch {
+            delay(MARK_READ_DELAY_MS)
+            runCatching { runsRepository.markRead(chatId, lastShown) }
+                .onSuccess { chat = chat?.copy(last_read_message_id = lastShown) }
+        }
     }
 
     /** Полная перезагрузка экрана: чат, владеющий агент, каталог моделей,
@@ -226,6 +305,7 @@ class ChatViewModel(
         // отображения в списке чатов).
         val loadedChat = repository.getChat(chatId, branch = _state.value.selectedBranch)
         chat = loadedChat
+        loadedChat.active_run?.let { runsRepository.attach(chatId, it.id) }
         val agent = repository.getAgent(loadedChat.agent_id)
         val models = repository.listModels()
         // Не блокирует загрузку экрана, если каталог профилей недоступен —
@@ -260,8 +340,16 @@ class ChatViewModel(
                 branches = branches ?: it.branches,
                 latestFacts = latestFactsFrom(allMessages) ?: it.latestFacts,
                 openTasks = openTasks,
+                firstUnreadMessageId = if (initialScrollDone) it.firstUnreadMessageId else loadedChat.first_unread_message_id,
+                scrollToMessageId = if (initialScrollDone) it.scrollToMessageId else loadedChat.first_unread_message_id,
             )
         }
+        initialScrollDone = true
+        scheduleMarkRead()
+    }
+
+    fun consumeScrollTarget() {
+        _state.update { it.copy(scrollToMessageId = null) }
     }
 
     /** Задачи этого чата подгружаются, только если у чата включена настройка
@@ -302,6 +390,7 @@ class ChatViewModel(
                     openTasks = openTasks,
                 )
             }
+            scheduleMarkRead()
         } catch (e: Exception) {
             _state.update { it.copy(errorMessage = errorText(e)) }
         }
@@ -309,8 +398,12 @@ class ChatViewModel(
 
     /** Сообщения основной ветки (0) + выбранной ветки (если не основная) —
      * то же правило, что и на сервере при отправке сообщений (`_filter_by_branch`). */
-    private fun visibleMessages(all: List<Message>, selectedBranch: Int): List<Message> =
-        if (selectedBranch == 0) all.filter { it.branch == 0 } else all.filter { it.branch == 0 || it.branch == selectedBranch }
+    private fun visibleMessages(all: List<Message>, selectedBranch: Int): List<Message> {
+        // Черновик идущего ответа (status="streaming") в списке не показывается —
+        // его рисует DraftBubble по событиям запуска.
+        val finished = all.filter { it.status != "streaming" }
+        return if (selectedBranch == 0) finished.filter { it.branch == 0 } else finished.filter { it.branch == 0 || it.branch == selectedBranch }
+    }
 
     /** Имя профиля по id из каталога — null, если профиль не подключён или
      * не найден в каталоге (см. одноимённую логику в MainViewModel/MainScreen). */
@@ -344,13 +437,12 @@ class ChatViewModel(
         }
     }
 
-    /** Отправляет введённый текст. Потоковый режим используется, если он
-     * включён в настройках чата. Клиент сам не решает, нужно ли обрезать
-     * контекст или суммаризировать — он лишь сообщает серверу, какая
-     * стратегия/настройка сейчас включена у чата (флаги `get_facts`/
-     * `sliding_window`/`autosummary`), а всю проверку и логику (в том числе
-     * когда именно требуется суммаризация) выполняет AgentsCore, см.
-     * `agents_core/repository.py`. */
+    /** Отправляет введённый текст как асинхронный запуск на сервере: ответ
+     * формируется в фоне, экран можно закрыть и вернуться — черновик
+     * продолжит дописываться (см. [RunsRepository]). Клиент лишь сообщает,
+     * какая стратегия включена у чата (флаги `get_facts`/`sliding_window`/
+     * `autosummary`); всю логику выполняет AgentsCore. Потоковый или обычный
+     * вызов модели сервер выбирает сам по настройке чата `stream`. */
     fun sendMessage() {
         val text = state.value.inputText.trim()
         if (text.isEmpty() || state.value.isBusy) return
@@ -359,14 +451,11 @@ class ChatViewModel(
         val stickyFacts = strategy == "sticky_facts"
         val slidingWindow = strategy == "sliding_window"
         val autosummary = currentChat?.settings?.autosummary ?: "off"
-        val useStream = currentChat?.settings?.stream == true
         val targetBranch = state.value.selectedBranch
         val branch = targetBranch.takeIf { it != 0 }
 
-        // Показываем сообщение пользователя в списке сразу же, не дожидаясь
-        // ответа сервера — реальное сообщение (с настоящим id) придёт следом
-        // при обновлении из refreshChatAndMessages() и заменит эту заглушку
-        // целиком (allMessages переприсваивается, а не патчится точечно).
+        // Сообщение пользователя видно сразу, не дожидаясь ответа сервера —
+        // настоящее (с id) придёт при обновлении и заменит заглушку целиком.
         val optimisticMessage = Message(
             id = PENDING_USER_MESSAGE_ID,
             chat_id = chatId,
@@ -384,72 +473,45 @@ class ChatViewModel(
                 errorMessage = null,
                 messageCount = allMessages.size,
                 messages = visibleMessages(allMessages, it.selectedBranch),
+                streamingDraft = StreamingDraft(),
             )
         }
 
         viewModelScope.launch {
             try {
-                if (useStream) {
-                    sendStreaming(text, stickyFacts, slidingWindow, autosummary, branch)
-                } else {
-                    repository.sendMessage(
-                        chatId, text,
-                        getFacts = stickyFacts, slidingWindow = slidingWindow, autosummary = autosummary,
-                        branch = branch,
-                    )
-                    refreshChatAndMessages()
-                }
+                runsRepository.startMessageRun(chatId, text, stickyFacts, slidingWindow, autosummary, branch)
+                refreshChatAndMessages()
             } catch (e: Exception) {
-                // Сервер мог всё же сохранить сообщение (например, ответ
-                // провайдера упал уже после записи пользовательского
-                // сообщения) — сначала убираем заглушку, затем синхронизируемся
-                // с реальным состоянием сервера; если сеть недоступна и
-                // refreshChatAndMessages() тоже не смог обновиться, заглушка
-                // остаётся снятой, а не "зависает" как будто отправлено.
                 allMessages = allMessages.filterNot { it.id == PENDING_USER_MESSAGE_ID }
                 _state.update {
                     it.copy(
-                        streamingDraft = null,
+                        inputText = if (it.inputText.isEmpty()) text else it.inputText,
+                        streamingDraft = if (it.activeRunId == null) null else it.streamingDraft,
                         messageCount = allMessages.size,
                         messages = visibleMessages(allMessages, it.selectedBranch),
                     )
                 }
                 refreshChatAndMessages()
-                _state.update { it.copy(errorMessage = errorText(e)) }
+                val message = if (e is AgentApiException && e.statusCode == 409) {
+                    "В этом чате ещё формируется ответ — дождитесь его или остановите"
+                } else {
+                    errorText(e)
+                }
+                _state.update { it.copy(errorMessage = message) }
             } finally {
                 _state.update { it.copy(isSending = false) }
             }
         }
     }
 
-    private suspend fun sendStreaming(text: String, getFacts: Boolean, slidingWindow: Boolean, autosummary: String, branch: Int?) {
-        var draft = StreamingDraft()
-        _state.update { it.copy(streamingDraft = draft) }
-        repository.streamMessage(chatId, text, getFacts, slidingWindow, autosummary, branch).collect { event ->
-            when (event) {
-                is AgentStreamEvent.Status -> {
-                    draft = draft.copy(status = event.status)
-                    _state.update { it.copy(streamingDraft = draft) }
-                }
-                is AgentStreamEvent.Delta -> {
-                    draft = draft.copy(
-                        content = draft.content + event.content,
-                        reasoningContent = draft.reasoningContent + event.reasoningContent,
-                    )
-                    _state.update { it.copy(streamingDraft = draft) }
-                }
-                is AgentStreamEvent.McpCall -> {
-                    draft = draft.copy(mcpCalls = draft.mcpCalls + McpCallEvent(name = event.name, status = event.status, ok = event.ok, error = event.error))
-                    _state.update { it.copy(streamingDraft = draft) }
-                }
-                is AgentStreamEvent.Done -> {
-                    _state.update { it.copy(streamingDraft = null) }
-                    refreshChatAndMessages()
-                }
-                is AgentStreamEvent.Error -> {
-                    _state.update { it.copy(streamingDraft = null, errorMessage = event.message) }
-                    refreshChatAndMessages()
-                }
+    /** Кнопка «Остановить» — отмена идущего запуска на сервере; частичный
+     * ответ сохраняется с пометкой «Остановлено». */
+    fun stopGeneration() {
+        viewModelScope.launch {
+            try {
+                runsRepository.cancelChatRun(chatId)
+            } catch (e: Exception) {
+                _state.update { it.copy(errorMessage = errorText(e)) }
             }
         }
     }
@@ -465,113 +527,42 @@ class ChatViewModel(
     // Продолжить выполнение?" с тремя кнопками. Никакого автозапуска цикла
     // здесь больше нет — каждое действие явное, по нажатию кнопки.
 
-    /** Кнопка "Продолжить" — один шаг (обращение к модели), после которого
-     * сервер сам снова ставит задачу на паузу (auto_pause=true) — цикл на
-     * клиенте не нужен, ровно один вызов. */
+    /** Кнопка "Продолжить" — один шаг Менеджера задач (серверный запуск
+     * `task_step`), после которого сервер сам снова ставит задачу на паузу. */
     fun continueTaskStep(taskId: String) = startTaskManagerRun(taskId, autoPause = true)
 
-    /** Кнопка "Выполнить" — без остановок до состояния done: сервер продвигает
-     * задачу шагами (каждый шаг — отдельный вызов, обращение к модели),
-     * клиент вызывает эндпоинт в цикле, пока не придёт `should_continue =
-     * false`. Пользователь может прервать этот цикл в любой момент кнопкой
-     * "Пауза" (см. [pauseTask]) — по дополнению пользователя: "если … нажал
-     * 'Выполнить', он может в любой момент … нажать кнопку пауза". */
+    /** Кнопка "Выполнить" — шаги подряд до завершения задачи; цикл идёт на
+     * СЕРВЕРЕ (запуск `task_run`), поэтому продолжается и после ухода с
+     * экрана чата. Прервать — кнопкой "Пауза" (см. [pauseTask]). */
     fun executeTaskUntilDone(taskId: String) = startTaskManagerRun(taskId, autoPause = false)
 
-    /** Общая реализация "Продолжить"/"Выполнить" — не более одного запущенного
-     * шага/цикла одновременно (пункт 2.6 концепции). [autoPause] = true —
-     * ровно один вызов [runOneTaskManagerStep], без учёта возвращённого
-     * `should_continue` (сервер и так сразу же самостоятельно ставит задачу на
-     * паузу); [autoPause] = false — цикл вызовов, пока сервер не вернёт
-     * `should_continue = false` (задача завершена, поставлена на паузу вручную
-     * во время шага, модели больше нечем её продвинуть, либо достигнут лимит
-     * `task_manager_max_steps`). */
     private fun startTaskManagerRun(taskId: String, autoPause: Boolean) {
-        if (taskManagerJob?.isActive == true) return
-        taskManagerJob = viewModelScope.launch {
-            _state.update { it.copy(taskManagerActiveTaskId = taskId, taskManagerAutoPause = autoPause) }
-            try {
-                if (autoPause) {
-                    runOneTaskManagerStep(taskId, autoPause = true)
-                } else {
-                    var shouldContinue = true
-                    while (shouldContinue) {
-                        shouldContinue = runOneTaskManagerStep(taskId, autoPause = false)
-                    }
-                }
-            } finally {
-                _state.update { it.copy(taskManagerActiveTaskId = null) }
-            }
-        }
-    }
-
-    /** Один шаг — возвращает `true`, если цикл нужно продолжать (см.
-     * `should_continue` в ответе сервера; при [autoPause] = true результат не
-     * используется вызывающей стороной, см. [startTaskManagerRun]). Ошибка
-     * (в т.ч. сеть) молча останавливает шаг/цикл, но не считается критичной
-     * для экрана в целом — сообщение об ошибке показывается тем же способом,
-     * что и для обычной отправки. */
-    private suspend fun runOneTaskManagerStep(taskId: String, autoPause: Boolean): Boolean {
-        val statusText = if (autoPause) "Выполняется следующий этап задачи" else "Менеджер задач выполняет задачу"
-        var draft = StreamingDraft(status = statusText)
-        _state.update { it.copy(streamingDraft = draft) }
-        var shouldContinue = false
-        try {
-            repository.stepTaskManager(chatId, taskId, autoPause).collect { event ->
-                when (event) {
-                    is TaskManagerStepEvent.Status -> {
-                        draft = draft.copy(status = event.status)
-                        _state.update { it.copy(streamingDraft = draft) }
-                    }
-                    is TaskManagerStepEvent.Delta -> {
-                        draft = draft.copy(
-                            content = draft.content + event.content,
-                            reasoningContent = draft.reasoningContent + event.reasoningContent,
-                        )
-                        _state.update { it.copy(streamingDraft = draft) }
-                    }
-                    is TaskManagerStepEvent.McpCall -> {
-                        draft = draft.copy(mcpCalls = draft.mcpCalls + McpCallEvent(name = event.name, status = event.status, ok = event.ok, error = event.error))
-                        _state.update { it.copy(streamingDraft = draft) }
-                    }
-                    is TaskManagerStepEvent.Done -> {
-                        _state.update { it.copy(streamingDraft = null) }
-                        refreshChatAndMessages()
-                        shouldContinue = event.shouldContinue
-                    }
-                    is TaskManagerStepEvent.Error -> {
-                        _state.update { it.copy(streamingDraft = null, errorMessage = event.message) }
-                        refreshChatAndMessages()
-                        shouldContinue = false
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            _state.update { it.copy(streamingDraft = null, errorMessage = errorText(e)) }
-            shouldContinue = false
-        }
-        return shouldContinue
-    }
-
-    /** Кнопка "Пауза" — и в карточке-подтверждении (пока в этом чате прямо
-     * сейчас работает "Выполнить"), и дублирующая её по функционалу кнопка в
-     * списке/карточке задачи (замечание пользователя). Сначала обрывает
-     * текущий запущенный шаг/цикл для ЭТОЙ задачи, если он идёт именно в этом
-     * чате (отмена корутины закрывает и текущее SSE-соединение — см.
-     * комментарий у [taskManagerJob]; настоящей отмены генерации на сервере
-     * нет, но клиент прекращает ждать и дальше не продолжает), затем
-     * применяет единственное оставшееся ручное действие "pause", чтобы задача
-     * считалась приостановленной и на сервере (шаги с auto_pause=false сами
-     * паузу не ставят). */
-    fun pauseTask(taskId: String) {
-        if (state.value.taskManagerActiveTaskId == taskId) {
-            taskManagerJob?.cancel()
-            taskManagerJob = null
-            _state.update { it.copy(taskManagerActiveTaskId = null, streamingDraft = null) }
-        }
+        if (state.value.isBusy) return
+        _state.update { it.copy(isSending = true, errorMessage = null) }
         viewModelScope.launch {
             try {
+                runsRepository.startTaskRun(chatId, taskId, autoPause)
+            } catch (e: Exception) {
+                _state.update { it.copy(errorMessage = errorText(e)) }
+            } finally {
+                _state.update { it.copy(isSending = false) }
+            }
+        }
+    }
+
+    /** Кнопка "Пауза": останавливает идущий запуск Менеджера задач этой
+     * задачи (серия шагов — после текущего шага) и ставит задачу на паузу. */
+    fun pauseTask(taskId: String) {
+        viewModelScope.launch {
+            try {
+                if (state.value.taskManagerActiveTaskId == taskId) {
+                    runsRepository.cancelChatRun(chatId)
+                }
                 repository.applyTaskActionManually(taskId, "pause")
+                refreshChatAndMessages()
+            } catch (e: AgentApiException) {
+                // 400 «уже на паузе» — не ошибка для пользователя.
+                if (e.statusCode != 400) _state.update { it.copy(errorMessage = errorText(e)) }
                 refreshChatAndMessages()
             } catch (e: Exception) {
                 _state.update { it.copy(errorMessage = errorText(e)) }

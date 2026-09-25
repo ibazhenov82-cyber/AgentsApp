@@ -6,11 +6,10 @@ import com.example.agentsapp.data.remote.AgentApiException
 import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.LongTermMemoryEntry
 import com.example.agentsapp.data.remote.MemorySnapshot
-import com.example.agentsapp.data.remote.TaskManagerStepEvent
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.remote.WorkingMemoryEntry
 import com.example.agentsapp.data.repository.AgentsCoreRepository
-import kotlinx.coroutines.Job
+import com.example.agentsapp.data.repository.RunsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -104,17 +103,29 @@ data class MemoryUiState(
 class MemoryViewModel(
     private val chatId: String,
     private val repository: AgentsCoreRepository,
+    private val runsRepository: RunsRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(MemoryUiState(chatId = chatId))
     val state: StateFlow<MemoryUiState> = _state.asStateFlow()
 
-    /** Корутины инлайн-шагов/циклов "Менеджера задач", по одной на задачу —
-     * та же логика прерывания, что и в `ChatViewModel.taskManagerJob`. */
-    private val taskManagerJobs: MutableMap<String, Job> = mutableMapOf()
-
     init {
         loadAll()
+        // Шаги Менеджера задач — серверные запуски (см. RunsRepository).
+        viewModelScope.launch {
+            runsRepository.runs.collect { runs ->
+                val run = runs[chatId]?.takeIf { it.taskId != null && (it.kind == "task_step" || it.kind == "task_run") }
+                _state.update {
+                    it.copy(
+                        runningTaskIds = setOfNotNull(run?.taskId),
+                        runningTaskAutoPause = if (run?.taskId != null) mapOf(run.taskId to (run.kind != "task_run")) else emptyMap(),
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            runsRepository.chatRefresh.collect { changedChatId -> if (changedChatId == chatId) loadTasks() }
+        }
     }
 
     fun selectTab(tab: MemoryTab) {
@@ -245,9 +256,9 @@ class MemoryViewModel(
      * `MainViewModel.pauseTaskInline`. "Продолжить"/"Выполнить" — отдельные
      * методы ниже (обращаются к модели). */
     fun pauseTaskInline(taskId: String) {
-        cancelInlineTaskRun(taskId)
         viewModelScope.launch {
             try {
+                if (taskId in _state.value.runningTaskIds) runCatching { runsRepository.cancelChatRun(chatId) }
                 repository.applyTaskActionManually(taskId, "pause")
                 loadTasks()
             } catch (e: Exception) {
@@ -266,55 +277,14 @@ class MemoryViewModel(
     fun executeTaskInline(taskId: String) = startInlineTaskRun(taskId, autoPause = false)
 
     private fun startInlineTaskRun(taskId: String, autoPause: Boolean) {
-        if (taskManagerJobs[taskId]?.isActive == true) return
-        taskManagerJobs[taskId] = viewModelScope.launch {
-            _state.update {
-                it.copy(
-                    runningTaskIds = it.runningTaskIds + taskId,
-                    runningTaskAutoPause = it.runningTaskAutoPause + (taskId to autoPause),
-                )
-            }
+        if (_state.value.runningTaskIds.isNotEmpty()) return
+        viewModelScope.launch {
             try {
-                if (autoPause) {
-                    runOneInlineStep(taskId, autoPause = true)
-                } else {
-                    var shouldContinue = true
-                    while (shouldContinue) {
-                        shouldContinue = runOneInlineStep(taskId, autoPause = false)
-                    }
-                }
-            } finally {
-                taskManagerJobs.remove(taskId)
-                _state.update { it.copy(runningTaskIds = it.runningTaskIds - taskId) }
-                loadTasks()
+                runsRepository.startTaskRun(chatId, taskId, autoPause)
+            } catch (e: Exception) {
+                _state.update { it.copy(errorMessage = errorTextFor(e)) }
             }
         }
-    }
-
-    private suspend fun runOneInlineStep(taskId: String, autoPause: Boolean): Boolean {
-        var shouldContinue = false
-        try {
-            repository.stepTaskManager(chatId, taskId, autoPause).collect { event ->
-                when (event) {
-                    is TaskManagerStepEvent.Done -> shouldContinue = event.shouldContinue
-                    is TaskManagerStepEvent.Error -> {
-                        _state.update { it.copy(errorMessage = event.message) }
-                        shouldContinue = false
-                    }
-                    else -> Unit
-                }
-            }
-        } catch (e: Exception) {
-            _state.update { it.copy(errorMessage = errorTextFor(e)) }
-            shouldContinue = false
-        }
-        return shouldContinue
-    }
-
-    private fun cancelInlineTaskRun(taskId: String) {
-        taskManagerJobs[taskId]?.cancel()
-        taskManagerJobs.remove(taskId)
-        _state.update { it.copy(runningTaskIds = it.runningTaskIds - taskId) }
     }
 
     // ---- снимок памяти ---------------------------------------------------------

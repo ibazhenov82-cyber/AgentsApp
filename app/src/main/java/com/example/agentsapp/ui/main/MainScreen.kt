@@ -1,6 +1,16 @@
 package com.example.agentsapp.ui.main
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MarkChatUnread
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +35,7 @@ import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Schema
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.AlertDialog
@@ -51,8 +62,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
@@ -67,19 +80,25 @@ import com.example.agentsapp.data.remote.ModelInfo
 import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.remote.TaskSummary
-import com.example.agentsapp.ui.common.SettingsSummary
+import com.example.agentsapp.ui.common.NameWithBadges
+import com.example.agentsapp.ui.common.SettingsBadgeFlow
+import com.example.agentsapp.ui.common.SettingsBadgeLine
+import com.example.agentsapp.ui.common.settingsBadgeTexts
 
 /** Кебаб-меню главного экрана (по замечанию пользователя — вместо ряда
  * кнопок на тулбаре): Настройки → Модели → Профили → Инварианты → Модели
- * состояний задач → MCP-сервер. Иконки — те же, что были у кнопок. */
+ * состояний задач → MCP-сервер → Планировщик. Иконки — те же, что были у кнопок. */
 @Composable
 private fun MainOverflowMenu(
+    unreadFirst: Boolean,
+    onToggleUnreadFirst: () -> Unit,
     onOpenDefaultSettings: () -> Unit,
     onOpenModels: () -> Unit,
     onOpenProfiles: () -> Unit,
     onOpenInvariants: () -> Unit,
     onOpenTaskMachines: () -> Unit,
     onOpenMcp: () -> Unit,
+    onOpenScheduler: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -108,6 +127,18 @@ private fun MainOverflowMenu(
             MainMenuItem("MCP-сервер", { Icon(Icons.Filled.Extension, contentDescription = null) }) {
                 expanded = false; onOpenMcp()
             }
+            MainMenuItem("Планировщик", { Icon(Icons.Filled.Schedule, contentDescription = null) }) {
+                expanded = false; onOpenScheduler()
+            }
+            HorizontalDivider()
+            // Порядок чатов: по умолчанию прежний; «Непрочитанные выше» —
+            // чаты с новыми сообщениями поднимаются наверх списка агента.
+            DropdownMenuItem(
+                text = { Text("Непрочитанные выше") },
+                leadingIcon = { Icon(Icons.Filled.MarkChatUnread, contentDescription = null) },
+                trailingIcon = { if (unreadFirst) Icon(Icons.Filled.Check, contentDescription = "Включено") },
+                onClick = { expanded = false; onToggleUnreadFirst() },
+            )
         }
     }
 }
@@ -137,6 +168,7 @@ fun MainScreen(
     onOpenTaskMachines: () -> Unit,
     onOpenTask: (taskId: String) -> Unit,
     onOpenMcp: () -> Unit,
+    onOpenScheduler: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -174,12 +206,15 @@ fun MainScreen(
                     // Все разделы — в одном кебаб-меню (по замечанию пользователя),
                     // вместо ряда кнопок на тулбаре.
                     MainOverflowMenu(
+                        unreadFirst = uiState.unreadFirst,
+                        onToggleUnreadFirst = viewModel::toggleUnreadFirst,
                         onOpenDefaultSettings = onOpenDefaultSettings,
                         onOpenModels = onOpenModels,
                         onOpenProfiles = onOpenProfiles,
                         onOpenInvariants = onOpenInvariants,
                         onOpenTaskMachines = onOpenTaskMachines,
                         onOpenMcp = onOpenMcp,
+                        onOpenScheduler = onOpenScheduler,
                     )
                 },
             )
@@ -208,7 +243,8 @@ fun MainScreen(
                     items(uiState.agentsWithChats, key = { it.agent.id }) { agentWithChats ->
                         val agentId = agentWithChats.agent.id
                         AgentCard(
-                            agentWithChats = agentWithChats,
+                            agentWithChats = agentWithChats.copy(chats = uiState.orderedChats(agentWithChats.chats)),
+                            uiState = uiState,
                             models = uiState.models,
                             profiles = uiState.profiles,
                             currentTasks = uiState.agentTasks[agentId].orEmpty(),
@@ -325,6 +361,8 @@ fun MainScreen(
 @Composable
 private fun AgentCard(
     agentWithChats: AgentWithChats,
+    /** Живые непрочитанные и идущие ответы (см. MainUiState). */
+    uiState: MainUiState,
     models: List<ModelInfo>,
     profiles: List<Profile>,
     // Агрегированный блок "Задачи" (замечание пользователя, пункт 1) — только
@@ -359,27 +397,60 @@ private fun AgentCard(
     // (см. Agent.default_profile_id), не то же самое, что активный профиль
     // конкретного чата (ChatRow ниже показывает свой бейдж по active_profile_id).
     val agentProfileName = profileNameOf(profiles, agent.default_profile_id)
+    // Бейджи — только настройки, отличающиеся от тех, что получил бы новый
+    // агент (настройки по умолчанию), по той же логике, что у чатов
+    // относительно агента. База не загрузилась — показываются все.
+    val agentBadges = remember(agent.settings, uiState.newAgentSettings, agent.invariant_ids, agentProfileName) {
+        settingsBadgeTexts(
+            settings = agent.settings,
+            baseline = uiState.newAgentSettings,
+            hasInvariants = agent.invariant_ids.isNotEmpty(),
+            profileName = agentProfileName,
+        )
+    }
+    var badgesExpanded by rememberSaveable(agent.id) { mutableStateOf(false) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(text = agent.name, style = MaterialTheme.typography.titleMedium)
+                    // Общий счётчик непрочитанных по чатам агента — виден, даже
+                    // если строк чатов на экране не видно.
+                    val agentUnread = agentWithChats.chats.sumOf { uiState.unreadCountOf(it) }
+                    // Название и бейджи настроек в одну строку; не поместившиеся
+                    // бейджи — «+N», по нажатию раскрываются ниже.
+                    NameWithBadges(
+                        name = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = agent.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                if (agentUnread > 0) {
+                                    Spacer(Modifier.width(8.dp))
+                                    UnreadCounter(agentUnread)
+                                }
+                            }
+                        },
+                        badges = {
+                            if (!badgesExpanded) SettingsBadgeLine(agentBadges, onExpand = { badgesExpanded = true })
+                        },
+                    )
                     Text(
                         text = modelLabel,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    // Сводка настроек агента (бейджи ограничений + температура/top_p
-                    // текстом) — в том же виде и порядке, что и на экране настроек;
-                    // бейдж "Профиль" — в этом же ряду, справа от "Память: ..."
-                    // (по замечанию пользователя), а не отдельным блоком.
-                    SettingsSummary(
-                        settings = agent.settings,
-                        hasInvariants = agent.invariant_ids.isNotEmpty(),
-                        profileName = agentProfileName,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
+                    if (badgesExpanded) {
+                        SettingsBadgeFlow(
+                            agentBadges,
+                            onCollapse = { badgesExpanded = false },
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
                 }
                 IconButton(onClick = onAddChat) {
                     Icon(Icons.Filled.Add, contentDescription = "Добавить чат")
@@ -396,15 +467,21 @@ private fun AgentCard(
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     agentWithChats.chats.forEach { chat ->
-                        ChatRow(
-                            chat = chat,
-                            agentSettings = agent.settings,
-                            profiles = profiles,
-                            onOpenChat = { onOpenChat(chat.id) },
-                            onOpenChatSettings = { onOpenChatSettings(chat.id) },
-                            onCopyChat = { onCopyChat(chat) },
-                            onDeleteChat = { onDeleteChat(chat) },
-                        )
+                        // key — чтобы состояние строки (раскрытые бейджи) шло за чатом при пересортировке.
+                        key(chat.id) {
+                            ChatRow(
+                                chat = chat,
+                                unreadCount = uiState.unreadCountOf(chat),
+                                preview = uiState.previewOf(chat),
+                                runStatus = uiState.runs[chat.id]?.let { it.currentStatus ?: "Формируется ответ" },
+                                agentSettings = agent.settings,
+                                profiles = profiles,
+                                onOpenChat = { onOpenChat(chat.id) },
+                                onOpenChatSettings = { onOpenChatSettings(chat.id) },
+                                onCopyChat = { onCopyChat(chat) },
+                                onDeleteChat = { onDeleteChat(chat) },
+                            )
+                        }
                     }
                 }
             } else {
@@ -600,9 +677,14 @@ private fun TaskSummaryRow(
 @Composable
 private fun ChatRow(
     chat: Chat,
+    /** Непрочитанные в этом чате (счётчик, жирное название, начало сообщения). */
+    unreadCount: Int,
+    preview: String?,
+    /** Идёт ответ — текущая фаза ("Использую инструмент …" и т.п.), иначе null. */
+    runStatus: String?,
     // Настройки агента-владельца — база для сравнения (замечание
     // пользователя: в списке агентов бейджи чата показывают только то, чем
-    // он отличается от агента, см. SettingsSummary(baselineSettings = ...)).
+    // он отличается от агента, см. settingsBadgeTexts(baseline = ...)).
     agentSettings: Settings,
     profiles: List<Profile>,
     onOpenChat: () -> Unit,
@@ -611,6 +693,16 @@ private fun ChatRow(
     onDeleteChat: () -> Unit,
 ) {
     val chatProfileName = profileNameOf(profiles, chat.active_profile_id)
+    // Бейджи — только отличия от настроек агента-владельца.
+    val chatBadges = remember(chat.settings, agentSettings, chat.invariant_ids, chatProfileName) {
+        settingsBadgeTexts(
+            settings = chat.settings,
+            baseline = agentSettings,
+            hasInvariants = chat.invariant_ids.isNotEmpty(),
+            profileName = chatProfileName,
+        )
+    }
+    var badgesExpanded by rememberSaveable(chat.id) { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -620,7 +712,66 @@ private fun ChatRow(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = chat.title, style = MaterialTheme.typography.bodyLarge)
+                NameWithBadges(
+                    name = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = chat.title,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = if (unreadCount > 0) FontWeight.Bold else null,
+                                modifier = Modifier.weight(1f, fill = false),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (unreadCount > 0) {
+                                Spacer(Modifier.width(6.dp))
+                                UnreadCounter(unreadCount)
+                            }
+                            if (chat.source == "scheduler") {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = "по расписанию",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    },
+                    badges = {
+                        if (!badgesExpanded) SettingsBadgeLine(chatBadges, onExpand = { badgesExpanded = true })
+                    },
+                )
+                if (badgesExpanded) {
+                    SettingsBadgeFlow(
+                        chatBadges,
+                        onCollapse = { badgesExpanded = false },
+                        modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
+                    )
+                }
+
+                if (runStatus != null) {
+                    // Идёт ответ — индикатор и текущая фаза.
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = runStatus,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                } else if (unreadCount > 0 && !preview.isNullOrBlank()) {
+                    Text(
+                        text = preview,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
                 // Формат приведён к тому же виду, что и на странице чата
                 // (ContextInfoBar: "Токены — вход:.."); размер шрифта — на
                 // ~15% меньше обычного bodySmall (по замечанию пользователя).
@@ -631,21 +782,6 @@ private fun ChatRow(
                         fontSize = MaterialTheme.typography.bodySmall.fontSize * 0.85f,
                     ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                // Сводка настроек ЭТОГО чата — здесь, в списке агентов,
-                // показываем только то, чем настройки чата отличаются от
-                // настроек агента-владельца (baselineSettings = agentSettings,
-                // по замечанию пользователя): если, например, "Потоковые
-                // ответы" совпадают — бейдж не показываем, если чат их
-                // выключил — показываем "Потоковые ответы (Выкл.)". На
-                // экране самого чата (ChatScreen) сравнения нет — там всегда
-                // видны все включённые настройки этого чата целиком.
-                SettingsSummary(
-                    settings = chat.settings,
-                    baselineSettings = agentSettings,
-                    hasInvariants = chat.invariant_ids.isNotEmpty(),
-                    profileName = chatProfileName,
-                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
             IconButton(onClick = onCopyChat) {
@@ -670,6 +806,25 @@ private fun ChatRow(
                 color = if (isOverflow) MaterialTheme.colorScheme.error else ProgressIndicatorDefaults.linearColor,
             )
         }
+    }
+}
+
+/** Круглый счётчик непрочитанных. */
+@Composable
+private fun UnreadCounter(count: Int) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.primary)
+            .padding(horizontal = 6.dp),
+    ) {
+        Text(
+            text = if (count > 99) "99+" else count.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimary,
+        )
     }
 }
 
@@ -712,8 +867,8 @@ private fun TextInputDialog(
     )
 }
 
-/** Имя профиля по id (для бейджа "Профиль" — [com.example.agentsapp.ui.common.ProfileBadge],
- * рисуется внутри [com.example.agentsapp.ui.common.SettingsSummary]) — null,
+/** Имя профиля по id (для бейджа "Профиль", см.
+ * [com.example.agentsapp.ui.common.settingsBadgeTexts]) — null,
  * если профиль не подключён (id == null) или не нашёлся в справочнике. */
 private fun profileNameOf(profiles: List<Profile>, profileId: String?): String? =
     profileId?.let { id -> profiles.firstOrNull { it.id == id }?.name }

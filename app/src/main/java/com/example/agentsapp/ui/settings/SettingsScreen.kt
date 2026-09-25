@@ -190,6 +190,14 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        // Адрес сервиса планировщика — третий независимый сервис.
+                        OutlinedTextField(
+                            value = state.schedulerConnectionUrl,
+                            onValueChange = viewModel::onSchedulerConnectionUrlChange,
+                            label = { Text("Адрес планировщика") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
                 item { HorizontalDivider() }
@@ -350,31 +358,43 @@ private fun ToolsJsonFieldEditor(def: SettingsFieldDef, state: SettingsUiState, 
             )
             if (state.availableMcpTools.isEmpty()) {
                 Text(
-                    "Нет доступных инструментов — проверьте адрес MCP-сервера в блоке \"Соединение с сервером\" выше.",
+                    "Нет доступных инструментов — проверьте, что в AgentsCore подключены MCP-серверы (MCP_ENABLED, MCP_SERVERS).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    state.availableMcpTools.forEach { tool ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable { viewModel.onMcpToolToggle(tool) },
-                        ) {
-                            androidx.compose.material3.Checkbox(
-                                checked = tool.name in state.selectedMcpToolNames,
-                                onCheckedChange = { viewModel.onMcpToolToggle(tool) },
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    toolTitle(tool.name, tool.title) ?: tool.name,
-                                    style = MaterialTheme.typography.bodyMedium,
+                    // Инструменты сгруппированы по источнику: группы нашего
+                    // MCP-сервера («GIT API», «Локальный GIT», …), «Планировщик»
+                    // или короткое имя внешнего MCP-сервера — в порядке, в
+                    // котором их отдаёт AgentsCore.
+                    state.availableMcpTools.groupBy { it.group.ifBlank { "MCP" } }.forEach { (group, tools) ->
+                        Text(
+                            group,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                        )
+                        tools.forEach { tool ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().clickable { viewModel.onMcpToolToggle(tool) },
+                            ) {
+                                androidx.compose.material3.Checkbox(
+                                    checked = tool.name in state.selectedMcpToolNames,
+                                    onCheckedChange = { viewModel.onMcpToolToggle(tool) },
                                 )
-                                Text(
-                                    tool.name,
-                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        toolTitle(tool.name, tool.title) ?: tool.name,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Text(
+                                        tool.name,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
                     }

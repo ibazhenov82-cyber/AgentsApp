@@ -5,12 +5,17 @@ import androidx.lifecycle.viewModelScope
 import com.example.agentsapp.data.remote.AgentApiException
 import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.AgentWithChats
+import com.example.agentsapp.data.remote.Chat
 import com.example.agentsapp.data.remote.ModelInfo
 import com.example.agentsapp.data.remote.Profile
-import com.example.agentsapp.data.remote.TaskManagerStepEvent
+import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.repository.AgentsCoreRepository
-import kotlinx.coroutines.Job
+import com.example.agentsapp.data.repository.ChatListChange
+import com.example.agentsapp.data.repository.ChatRunState
+import com.example.agentsapp.data.repository.RunsRepository
+import com.example.agentsapp.data.repository.UnreadInfo
+import com.example.agentsapp.data.UiPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,8 +53,32 @@ data class MainUiState(
     // выполнение ("Выполнить", можно прервать в любой момент кнопкой "Пауза" —
     // дополнение пользователя). Валидно только для id из [runningTaskIds].
     val runningTaskAutoPause: Map<String, Boolean> = emptyMap(),
+    /** Идущие запуски по id чата — индикатор «идёт ответ» и текущая фаза в строке чата. */
+    val runs: Map<String, ChatRunState> = emptyMap(),
+    /** Непрочитанные по id чата — живые значения из общей ленты (поверх `Chat.unread_count`). */
+    val unread: Map<String, UnreadInfo> = emptyMap(),
+    /** Настройка «Непрочитанные выше» (по умолчанию выключена — порядок как раньше). */
+    val unreadFirst: Boolean = false,
+    /** Настройки, которые получил бы новый агент (настройки по умолчанию +
+     * встроенные значения) — бейджи агента показывают только отличия от них.
+     * null — не загрузились, тогда бейджи агента показываются полностью. */
+    val newAgentSettings: Settings? = null,
     val errorMessage: String? = null,
 ) {
+    fun unreadCountOf(chat: Chat): Int = unread[chat.id]?.unreadCount ?: chat.unread_count
+
+    fun previewOf(chat: Chat): String? = unread[chat.id]?.preview ?: chat.preview
+
+    fun lastMessageAtOf(chat: Chat): Long = unread[chat.id]?.lastMessageAt ?: chat.last_message_at ?: chat.updated_at
+
+    /** Чаты агента в порядке показа: при «Непрочитанные выше» — сначала
+     * чаты с непрочитанными, затем по времени последнего сообщения. */
+    fun orderedChats(chats: List<Chat>): List<Chat> =
+        if (!unreadFirst) chats
+        else chats.sortedWith(
+            compareByDescending<Chat> { unreadCountOf(it) > 0 }.thenByDescending { lastMessageAtOf(it) }
+        )
+
     /** Имя профиля по id — null, если профиль не подключён или почему-то не
      * найден в справочнике (например, удалён параллельно другим клиентом). */
     fun profileNameOf(profileId: String?): String? =
@@ -64,17 +93,81 @@ data class MainUiState(
  */
 class MainViewModel(
     private val repository: AgentsCoreRepository,
+    private val runsRepository: RunsRepository,
+    private val uiPreferences: UiPreferences,
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(MainUiState())
+    private val _uiState = MutableStateFlow(MainUiState(unreadFirst = uiPreferences.unreadFirst))
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
-
-    /** Корутины инлайн-шагов/циклов "Менеджера задач", по одной на задачу — та
-     * же логика прерывания, что и в `ChatViewModel.taskManagerJob`. */
-    private val taskManagerJobs: MutableMap<String, Job> = mutableMapOf()
 
     init {
         refresh()
+        // Идущие ответы/шаги задач (асинхронные запуски) — индикаторы в строках чатов.
+        viewModelScope.launch {
+            runsRepository.runs.collect { runs ->
+                val taskRuns = runs.values.filter { it.taskId != null && (it.kind == "task_step" || it.kind == "task_run") }
+                _uiState.update {
+                    it.copy(
+                        runs = runs,
+                        runningTaskIds = taskRuns.mapNotNull { r -> r.taskId }.toSet(),
+                        runningTaskAutoPause = taskRuns.associate { r -> r.taskId!! to (r.kind != "task_run") },
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            runsRepository.unread.collect { unread -> _uiState.update { it.copy(unread = unread) } }
+        }
+        // Изменения списка чатов из общей ленты сервера — без полного перезапроса.
+        viewModelScope.launch {
+            runsRepository.chatChanges.collect { change ->
+                when (change) {
+                    is ChatListChange.Upsert -> upsertChat(change.chat)
+                    is ChatListChange.Deleted -> removeChat(change.chatId)
+                    ChatListChange.Resync -> loadData()
+                }
+            }
+        }
+        // Ответ/шаг закончился — обновить строку чата (токены) и задачи агента.
+        viewModelScope.launch {
+            runsRepository.chatRefresh.collect { chatId -> refreshChatRow(chatId) }
+        }
+    }
+
+    fun toggleUnreadFirst() {
+        val value = !_uiState.value.unreadFirst
+        uiPreferences.unreadFirst = value
+        _uiState.update { it.copy(unreadFirst = value) }
+    }
+
+    private fun upsertChat(chat: Chat) {
+        _uiState.update { state ->
+            state.copy(agentsWithChats = state.agentsWithChats.map { group ->
+                if (group.agent.id != chat.agent_id) group
+                else if (group.chats.any { it.id == chat.id }) group.copy(chats = group.chats.map { if (it.id == chat.id) chat else it })
+                else group.copy(chats = listOf(chat) + group.chats)
+            })
+        }
+    }
+
+    private fun removeChat(chatId: String) {
+        _uiState.update { state ->
+            state.copy(agentsWithChats = state.agentsWithChats.map { group ->
+                group.copy(chats = group.chats.filterNot { it.id == chatId })
+            })
+        }
+    }
+
+    private fun refreshChatRow(chatId: String) {
+        val agentId = _uiState.value.agentsWithChats.firstOrNull { g -> g.chats.any { it.id == chatId } }?.agent?.id ?: return
+        viewModelScope.launch {
+            runCatching { repository.getChat(chatId) }.getOrNull()?.let { upsertChat(it) }
+            val group = _uiState.value.agentsWithChats.firstOrNull { it.agent.id == agentId } ?: return@launch
+            if (group.agent.settings.task_tracking_enabled) {
+                val refreshed = runCatching { repository.listAgentTasks(agentId) }.getOrDefault(emptyList())
+                _uiState.update { it.copy(agentTasks = it.agentTasks + (agentId to refreshed)) }
+            }
+        }
     }
 
     /** Полностью перечитывает список агентов/чатов с сервера. Каталог
@@ -103,6 +196,8 @@ class MainViewModel(
             // профили редактируются на отдельном экране ("Профили"), и после
             // возврата оттуда бейдж должен сразу показать актуальное имя.
             val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
+            // Тоже не кэшируется: настройки по умолчанию меняются на экране «Настройки».
+            val newAgentSettings = runCatching { repository.getNewAgentSettings() }.getOrNull()
             // Только для агентов с включённым "Отслеживать задачи" — иначе
             // задачи вообще не существуют на сервере (пункт 4 замечаний).
             val agentTasks = agents
@@ -111,9 +206,10 @@ class MainViewModel(
             _uiState.update {
                 it.copy(
                     isLoading = false, agentsWithChats = agents, models = models, profiles = profiles,
-                    agentTasks = agentTasks,
+                    agentTasks = agentTasks, newAgentSettings = newAgentSettings,
                 )
             }
+            runsRepository.seedChats(agents.flatMap { it.chats })
         } catch (e: Exception) {
             _uiState.update { it.copy(isLoading = false, errorMessage = friendlyMessage(e)) }
         }
@@ -190,9 +286,13 @@ class MainViewModel(
      * этот метод им не подходит, поэтому сначала прерывает такой запущенный
      * шаг/цикл для этой задачи, если он идёт. */
     fun pauseTaskInline(agentId: String, taskId: String) {
-        cancelInlineTaskRun(taskId)
         viewModelScope.launch {
             try {
+                // Идёт запуск Менеджера задач этой задачи — остановить (серия
+                // шагов — после текущего шага), затем поставить на паузу.
+                _uiState.value.runs.values.firstOrNull { it.taskId == taskId }?.let {
+                    runCatching { runsRepository.cancelChatRun(it.chatId) }
+                }
                 repository.applyTaskActionManually(taskId, "pause")
                 val refreshed = runCatching { repository.listAgentTasks(agentId) }.getOrDefault(emptyList())
                 _uiState.update { it.copy(agentTasks = it.agentTasks + (agentId to refreshed)) }
@@ -215,61 +315,16 @@ class MainViewModel(
         startInlineTaskRun(agentId, taskId, chatId, autoPause = false)
 
     private fun startInlineTaskRun(agentId: String, taskId: String, chatId: String, autoPause: Boolean) {
-        if (taskManagerJobs[taskId]?.isActive == true) return
-        taskManagerJobs[taskId] = viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    runningTaskIds = it.runningTaskIds + taskId,
-                    runningTaskAutoPause = it.runningTaskAutoPause + (taskId to autoPause),
-                )
-            }
+        if (taskId in _uiState.value.runningTaskIds) return
+        viewModelScope.launch {
             try {
-                if (autoPause) {
-                    runOneInlineStep(chatId, taskId, autoPause = true)
-                } else {
-                    var shouldContinue = true
-                    while (shouldContinue) {
-                        shouldContinue = runOneInlineStep(chatId, taskId, autoPause = false)
-                    }
-                }
-            } finally {
-                taskManagerJobs.remove(taskId)
-                _uiState.update { it.copy(runningTaskIds = it.runningTaskIds - taskId) }
-                val refreshed = runCatching { repository.listAgentTasks(agentId) }.getOrDefault(emptyList())
-                _uiState.update { it.copy(agentTasks = it.agentTasks + (agentId to refreshed)) }
+                // Шаги идут на сервере (асинхронный запуск) — индикатор берётся
+                // из RunsRepository.runs, задачи агента обновятся по окончании.
+                runsRepository.startTaskRun(chatId, taskId, autoPause)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(errorMessage = friendlyMessage(e)) }
             }
         }
-    }
-
-    /** Один шаг — возвращает `true`, если цикл нужно продолжать (та же
-     * логика, что и в `ChatViewModel.runOneTaskManagerStep`, но без черновика
-     * ответа — в списке задач не показывается текст ответа ассистента). */
-    private suspend fun runOneInlineStep(chatId: String, taskId: String, autoPause: Boolean): Boolean {
-        var shouldContinue = false
-        try {
-            repository.stepTaskManager(chatId, taskId, autoPause).collect { event ->
-                when (event) {
-                    is TaskManagerStepEvent.Done -> shouldContinue = event.shouldContinue
-                    is TaskManagerStepEvent.Error -> {
-                        _uiState.update { it.copy(errorMessage = event.message) }
-                        shouldContinue = false
-                    }
-                    else -> Unit
-                }
-            }
-        } catch (e: Exception) {
-            _uiState.update { it.copy(errorMessage = friendlyMessage(e)) }
-            shouldContinue = false
-        }
-        return shouldContinue
-    }
-
-    /** Прерывает инлайн-шаг/цикл для задачи [taskId], если он сейчас идёт
-     * (кнопка "Пауза" — см. [pauseTaskInline]). */
-    private fun cancelInlineTaskRun(taskId: String) {
-        taskManagerJobs[taskId]?.cancel()
-        taskManagerJobs.remove(taskId)
-        _uiState.update { it.copy(runningTaskIds = it.runningTaskIds - taskId) }
     }
 
     /** Выполняет действие, требующее сети, и по завершении обновляет список

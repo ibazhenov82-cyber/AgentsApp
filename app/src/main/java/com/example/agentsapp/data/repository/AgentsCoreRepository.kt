@@ -2,7 +2,6 @@ package com.example.agentsapp.data.repository
 
 import com.example.agentsapp.data.remote.Agent
 import com.example.agentsapp.data.remote.AgentWithChats
-import com.example.agentsapp.data.remote.AgentStreamEvent
 import com.example.agentsapp.data.remote.AgentsCoreApiClient
 import com.example.agentsapp.data.remote.Branch
 import com.example.agentsapp.data.remote.Chat
@@ -13,17 +12,15 @@ import com.example.agentsapp.data.remote.LongTermMemoryEntry
 import com.example.agentsapp.data.remote.MemorySnapshot
 import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.ModelHealth
+import com.example.agentsapp.data.remote.McpToolDescription
 import com.example.agentsapp.data.remote.ModelInfo
 import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.RegisteredSkill
-import com.example.agentsapp.data.remote.SendMessageResponse
 import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.remote.TaskDetail
-import com.example.agentsapp.data.remote.TaskManagerStepEvent
 import com.example.agentsapp.data.remote.TaskStateMachineInfo
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.remote.WorkingMemoryEntry
-import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.JsonElement
 
 /** Единственная точка, через которую экраны обращаются к данным — тонкая
@@ -33,9 +30,11 @@ class AgentsCoreRepository(private val api: AgentsCoreApiClient) {
 
     suspend fun health(): HealthResponse = api.health()
     suspend fun listModels(): List<ModelInfo> = api.listModels()
+    suspend fun listMcpTools(): List<McpToolDescription> = api.listMcpTools()
     suspend fun modelHealth(modelId: String): ModelHealth = api.modelHealth(modelId)
 
     suspend fun getDefaultSettings(): DefaultSettings = api.getDefaultSettings()
+    suspend fun getNewAgentSettings(): Settings = api.getNewAgentSettings()
     suspend fun updateDefaultSettings(patch: Map<String, JsonElement>): DefaultSettings = api.updateDefaultSettings(patch)
     suspend fun resetDefaultSettings(): DefaultSettings = api.resetDefaultSettings()
 
@@ -65,25 +64,8 @@ class AgentsCoreRepository(private val api: AgentsCoreApiClient) {
     suspend fun clearMessages(chatId: String) = api.clearMessages(chatId)
     suspend fun deleteMessage(chatId: String, messageId: Long) = api.deleteMessage(chatId, messageId)
     suspend fun bulkDeleteMessages(chatId: String, ids: List<Long>) = api.bulkDeleteMessages(chatId, ids)
-    suspend fun sendMessage(
-        chatId: String,
-        text: String,
-        getFacts: Boolean = false,
-        slidingWindow: Boolean = false,
-        autosummary: String = "off",
-        branch: Int? = null,
-    ): SendMessageResponse =
-        api.sendMessage(chatId, text, getFacts, slidingWindow, autosummary, branch)
-
-    fun streamMessage(
-        chatId: String,
-        text: String,
-        getFacts: Boolean = false,
-        slidingWindow: Boolean = false,
-        autosummary: String = "off",
-        branch: Int? = null,
-    ): Flow<AgentStreamEvent> =
-        api.streamMessage(chatId, text, getFacts, slidingWindow, autosummary, branch)
+    // Отправка сообщений и шаги Менеджера задач — асинхронные запуски, см.
+    // [RunsRepository] (живёт на уровне приложения, а не экрана чата).
 
     // ---- Рабочая/долговременная память и профили-пайплайны -------------------
 
@@ -148,9 +130,4 @@ class AgentsCoreRepository(private val api: AgentsCoreApiClient) {
         api.applyTaskActionManually(taskId, action, note)
     suspend fun deleteTask(taskId: String) = api.deleteTask(taskId)
 
-    /** "Менеджер задач" (редизайн) — см. [AgentsCoreApiClient.stepTaskManager].
-     * [autoPause] = true ("Продолжить", один шаг), false ("Выполнить", без
-     * остановок до done). */
-    fun stepTaskManager(chatId: String, taskId: String, autoPause: Boolean = true): Flow<TaskManagerStepEvent> =
-        api.stepTaskManager(chatId, taskId, autoPause)
 }

@@ -1,24 +1,41 @@
 package com.example.agentsapp.ui.navigation
 
+import android.net.Uri
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.agentsapp.AppContainer
-import com.example.agentsapp.ui.AddScheduledToolViewModelFactory
+import com.example.agentsapp.data.repository.NewAnswerNotice
+import com.example.agentsapp.ui.common.NewAnswerBanner
 import com.example.agentsapp.ui.ChatViewModelFactory
 import com.example.agentsapp.ui.GitHostsViewModelFactory
 import com.example.agentsapp.ui.MainViewModelFactory
+import com.example.agentsapp.ui.JobEditViewModelFactory
+import com.example.agentsapp.ui.JobRunsViewModelFactory
 import com.example.agentsapp.ui.McpViewModelFactory
+import com.example.agentsapp.ui.SchedulerViewModelFactory
 import com.example.agentsapp.ui.MemoryViewModelFactory
 import com.example.agentsapp.ui.ModelsViewModelFactory
 import com.example.agentsapp.ui.ProfilesViewModelFactory
-import com.example.agentsapp.ui.ScheduledToolRunsViewModelFactory
 import com.example.agentsapp.ui.SettingsViewModelFactory
 import com.example.agentsapp.ui.chat.ChatScreen
 import com.example.agentsapp.ui.chat.ChatViewModel
@@ -27,20 +44,22 @@ import com.example.agentsapp.ui.invariants.InvariantsScreen
 import com.example.agentsapp.ui.invariants.InvariantsViewModel
 import com.example.agentsapp.ui.main.MainScreen
 import com.example.agentsapp.ui.main.MainViewModel
-import com.example.agentsapp.ui.mcp.AddScheduledToolScreen
-import com.example.agentsapp.ui.mcp.AddScheduledToolViewModel
 import com.example.agentsapp.ui.mcp.GitHostsScreen
 import com.example.agentsapp.ui.mcp.GitHostsViewModel
 import com.example.agentsapp.ui.mcp.McpScreen
 import com.example.agentsapp.ui.mcp.McpViewModel
-import com.example.agentsapp.ui.mcp.ScheduledToolRunsScreen
-import com.example.agentsapp.ui.mcp.ScheduledToolRunsViewModel
 import com.example.agentsapp.ui.memory.MemoryScreen
 import com.example.agentsapp.ui.memory.MemoryViewModel
 import com.example.agentsapp.ui.models.ModelsScreen
 import com.example.agentsapp.ui.models.ModelsViewModel
 import com.example.agentsapp.ui.profiles.ProfilesScreen
 import com.example.agentsapp.ui.profiles.ProfilesViewModel
+import com.example.agentsapp.ui.scheduler.JobEditScreen
+import com.example.agentsapp.ui.scheduler.JobEditViewModel
+import com.example.agentsapp.ui.scheduler.JobRunsScreen
+import com.example.agentsapp.ui.scheduler.JobRunsViewModel
+import com.example.agentsapp.ui.scheduler.SchedulerScreen
+import com.example.agentsapp.ui.scheduler.SchedulerViewModel
 import com.example.agentsapp.ui.settings.SettingsMode
 import com.example.agentsapp.ui.settings.SettingsScreen
 import com.example.agentsapp.ui.settings.SettingsViewModel
@@ -50,8 +69,7 @@ import com.example.agentsapp.ui.taskmachines.TaskMachinesViewModel
 import com.example.agentsapp.ui.TaskDetailViewModelFactory
 import com.example.agentsapp.ui.tasks.TaskDetailScreen
 import com.example.agentsapp.ui.tasks.TaskDetailViewModel
-import java.net.URLDecoder
-import java.net.URLEncoder
+import kotlinx.coroutines.delay
 
 private object Routes {
     const val MAIN = "main"
@@ -72,17 +90,22 @@ private object Routes {
     // Отдельный MCP-сервер (новое ТЗ, третий компонент) — свой маленький
     // под-граф навигации, независимый от остальных маршрутов выше.
     const val MCP = "mcp"
-    const val MCP_ADD_TASK = "mcp/addTask"
     const val GIT_HOSTS = "mcp/gitHosts"
-    const val MCP_TASK_RUNS = "mcp/tasks/{toolId}/runs?name={toolName}"
+
+    // Планировщик (scheduler_service).
+    const val SCHEDULER = "scheduler"
+    const val JOB_NEW = "scheduler/jobs/new"
+    const val JOB_EDIT = "scheduler/jobs/{jobId}/edit"
+    const val JOB_RUNS = "scheduler/jobs/{jobId}/runs?name={jobName}"
 
     fun agentSettings(agentId: String) = "agentSettings/$agentId"
     fun chatSettings(chatId: String) = "chatSettings/$chatId"
     fun chat(chatId: String) = "chat/$chatId"
     fun memory(chatId: String) = "memory/$chatId"
     fun taskDetail(taskId: String) = "task/$taskId"
-    fun mcpTaskRuns(toolId: String, toolName: String) =
-        "mcp/tasks/$toolId/runs?name=${URLEncoder.encode(toolName, "UTF-8")}"
+    fun jobEdit(jobId: String) = "scheduler/jobs/$jobId/edit"
+    fun jobRuns(jobId: String, jobName: String) =
+        "scheduler/jobs/$jobId/runs?name=${Uri.encode(jobName)}"
 }
 
 @Composable
@@ -90,9 +113,27 @@ fun AppNavHost(
     container: AppContainer,
     navController: NavHostController = rememberNavController(),
 ) {
+    // Всплывающее «Новый ответ в «<чат>»» — поверх любого экрана, кроме
+    // главного (там непрочитанное видно в списке чатов).
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute by rememberUpdatedState(backStackEntry?.destination?.route)
+    var notice by remember { mutableStateOf<NewAnswerNotice?>(null) }
+    LaunchedEffect(Unit) {
+        container.runsRepository.notices.collect { incoming ->
+            if (currentRoute != Routes.MAIN) notice = incoming
+        }
+    }
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            delay(6_000)
+            notice = null
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     NavHost(navController = navController, startDestination = Routes.MAIN) {
         composable(Routes.MAIN) {
-            val factory = remember { MainViewModelFactory(container.repository) }
+            val factory = remember { MainViewModelFactory(container.repository, container.runsRepository, container.uiPreferences) }
             val vm: MainViewModel = viewModel(factory = factory)
             MainScreen(
                 viewModel = vm,
@@ -106,6 +147,7 @@ fun AppNavHost(
                 onOpenTaskMachines = { navController.navigate(Routes.TASK_MACHINES) },
                 onOpenTask = { taskId -> navController.navigate(Routes.taskDetail(taskId)) },
                 onOpenMcp = { navController.navigate(Routes.MCP) },
+                onOpenScheduler = { navController.navigate(Routes.SCHEDULER) },
             )
         }
 
@@ -134,7 +176,7 @@ fun AppNavHost(
         }
 
         composable(Routes.DEFAULT_SETTINGS) {
-            val factory = remember { SettingsViewModelFactory(SettingsMode.Default, container.repository, container.connectionSettings, container.mcpConnectionSettings, container.mcpRepository) }
+            val factory = remember { SettingsViewModelFactory(SettingsMode.Default, container.repository, container.connectionSettings, container.mcpConnectionSettings, container.schedulerConnectionSettings) }
             val vm: SettingsViewModel = viewModel(key = "defaultSettings", factory = factory)
             SettingsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
@@ -144,7 +186,7 @@ fun AppNavHost(
             arguments = listOf(navArgument("agentId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val agentId = backStackEntry.arguments?.getString("agentId").orEmpty()
-            val factory = remember(agentId) { SettingsViewModelFactory(SettingsMode.Agent(agentId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.mcpRepository) }
+            val factory = remember(agentId) { SettingsViewModelFactory(SettingsMode.Agent(agentId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.schedulerConnectionSettings) }
             val vm: SettingsViewModel = viewModel(key = "agentSettings-$agentId", factory = factory)
             SettingsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
@@ -154,7 +196,7 @@ fun AppNavHost(
             arguments = listOf(navArgument("chatId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val chatId = backStackEntry.arguments?.getString("chatId").orEmpty()
-            val factory = remember(chatId) { SettingsViewModelFactory(SettingsMode.Chat(chatId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.mcpRepository) }
+            val factory = remember(chatId) { SettingsViewModelFactory(SettingsMode.Chat(chatId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.schedulerConnectionSettings) }
             val vm: SettingsViewModel = viewModel(key = "chatSettings-$chatId", factory = factory)
             SettingsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
@@ -164,7 +206,7 @@ fun AppNavHost(
             arguments = listOf(navArgument("chatId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val chatId = backStackEntry.arguments?.getString("chatId").orEmpty()
-            val factory = remember(chatId) { ChatViewModelFactory(chatId, container.repository) }
+            val factory = remember(chatId) { ChatViewModelFactory(chatId, container.repository, container.runsRepository) }
             val vm: ChatViewModel = viewModel(key = "chat-$chatId", factory = factory)
             ChatScreen(
                 viewModel = vm,
@@ -183,7 +225,7 @@ fun AppNavHost(
             arguments = listOf(navArgument("chatId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val chatId = backStackEntry.arguments?.getString("chatId").orEmpty()
-            val factory = remember(chatId) { MemoryViewModelFactory(chatId, container.repository) }
+            val factory = remember(chatId) { MemoryViewModelFactory(chatId, container.repository, container.runsRepository) }
             val vm: MemoryViewModel = viewModel(key = "memory-$chatId", factory = factory)
             MemoryScreen(
                 viewModel = vm,
@@ -197,7 +239,7 @@ fun AppNavHost(
             arguments = listOf(navArgument("taskId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val taskId = backStackEntry.arguments?.getString("taskId").orEmpty()
-            val factory = remember(taskId) { TaskDetailViewModelFactory(taskId, container.repository) }
+            val factory = remember(taskId) { TaskDetailViewModelFactory(taskId, container.repository, container.runsRepository) }
             val vm: TaskDetailViewModel = viewModel(key = "task-$taskId", factory = factory)
             TaskDetailScreen(
                 viewModel = vm,
@@ -219,18 +261,6 @@ fun AppNavHost(
                 viewModel = vm,
                 onBack = { navController.popBackStack() },
                 onOpenGitHosts = { navController.navigate(Routes.GIT_HOSTS) },
-                onOpenAddTask = { navController.navigate(Routes.MCP_ADD_TASK) },
-                onOpenRuns = { toolId, toolName -> navController.navigate(Routes.mcpTaskRuns(toolId, toolName)) },
-            )
-        }
-
-        composable(Routes.MCP_ADD_TASK) {
-            val factory = remember { AddScheduledToolViewModelFactory(container.mcpRepository) }
-            val vm: AddScheduledToolViewModel = viewModel(factory = factory)
-            AddScheduledToolScreen(
-                viewModel = vm,
-                onBack = { navController.popBackStack() },
-                onCreated = { navController.popBackStack() },
             )
         }
 
@@ -240,19 +270,71 @@ fun AppNavHost(
             GitHostsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
 
+        // ---- Планировщик ----
+
+        composable(Routes.SCHEDULER) {
+            val factory = remember { SchedulerViewModelFactory(container.schedulerRepository) }
+            val vm: SchedulerViewModel = viewModel(factory = factory)
+            SchedulerScreen(
+                viewModel = vm,
+                onBack = { navController.popBackStack() },
+                onCreateJob = { navController.navigate(Routes.JOB_NEW) },
+                onEditJob = { jobId -> navController.navigate(Routes.jobEdit(jobId)) },
+                onOpenRuns = { jobId, jobName -> navController.navigate(Routes.jobRuns(jobId, jobName)) },
+            )
+        }
+
+        composable(Routes.JOB_NEW) {
+            val factory = remember { JobEditViewModelFactory(null, container.schedulerRepository, container.repository) }
+            val vm: JobEditViewModel = viewModel(key = "jobNew", factory = factory)
+            JobEditScreen(viewModel = vm, onBack = { navController.popBackStack() }, onSaved = { navController.popBackStack() })
+        }
+
         composable(
-            route = Routes.MCP_TASK_RUNS,
+            route = Routes.JOB_EDIT,
+            arguments = listOf(navArgument("jobId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val jobId = backStackEntry.arguments?.getString("jobId").orEmpty()
+            val factory = remember(jobId) { JobEditViewModelFactory(jobId, container.schedulerRepository, container.repository) }
+            val vm: JobEditViewModel = viewModel(key = "jobEdit-$jobId", factory = factory)
+            JobEditScreen(viewModel = vm, onBack = { navController.popBackStack() }, onSaved = { navController.popBackStack() })
+        }
+
+        composable(
+            route = Routes.JOB_RUNS,
             arguments = listOf(
-                navArgument("toolId") { type = NavType.StringType },
-                navArgument("toolName") { type = NavType.StringType; defaultValue = "" },
+                navArgument("jobId") { type = NavType.StringType },
+                navArgument("jobName") { type = NavType.StringType; defaultValue = "" },
             ),
         ) { backStackEntry ->
-            val toolId = backStackEntry.arguments?.getString("toolId").orEmpty()
-            val toolName = backStackEntry.arguments?.getString("toolName").orEmpty()
-                .let { runCatching { URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }
-            val factory = remember(toolId) { ScheduledToolRunsViewModelFactory(toolId, container.mcpRepository) }
-            val vm: ScheduledToolRunsViewModel = viewModel(key = "mcpRuns-$toolId", factory = factory)
-            ScheduledToolRunsScreen(viewModel = vm, toolName = toolName, onBack = { navController.popBackStack() })
+            val jobId = backStackEntry.arguments?.getString("jobId").orEmpty()
+            // Navigation уже раскодирует аргумент — повторный URLDecoder.decode не нужен.
+            val jobName = backStackEntry.arguments?.getString("jobName").orEmpty()
+            val factory = remember(jobId) { JobRunsViewModelFactory(jobId, container.schedulerRepository) }
+            val vm: JobRunsViewModel = viewModel(key = "jobRuns-$jobId", factory = factory)
+            JobRunsScreen(
+                viewModel = vm,
+                jobName = jobName,
+                onBack = { navController.popBackStack() },
+                onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
+                onOpenTask = { taskId -> navController.navigate(Routes.taskDetail(taskId)) },
+            )
+        }
+    }
+
+        notice?.let { shown ->
+            NewAnswerBanner(
+                notice = shown,
+                onOpen = {
+                    notice = null
+                    navController.navigate(Routes.chat(shown.chatId))
+                },
+                onDismiss = { notice = null },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 64.dp, start = 12.dp, end = 12.dp),
+            )
         }
     }
 }

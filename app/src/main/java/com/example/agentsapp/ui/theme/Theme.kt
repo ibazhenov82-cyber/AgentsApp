@@ -90,7 +90,7 @@ fun AgentsAppTheme(
 fun summaryBubbleColor(): androidx.compose.ui.graphics.Color =
     if (isSystemInDarkTheme()) SummaryBubbleDark else SummaryBubbleLight
 
-/** Фон/цвет текста бейджа "Профиль" (см. [com.example.agentsapp.ui.common.ProfileBadge]) —
+/** Фон/цвет текста бейджа "Профиль" —
  * своя пара "niagara", не завязанная на роли [MaterialTheme.colorScheme], по
  * тому же принципу, что и [summaryBubbleColor]. */
 @Composable
