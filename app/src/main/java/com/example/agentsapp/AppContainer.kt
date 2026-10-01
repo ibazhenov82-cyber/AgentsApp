@@ -3,12 +3,15 @@ package com.example.agentsapp
 import android.content.Context
 import com.example.agentsapp.data.UiPreferences
 import com.example.agentsapp.data.remote.AgentsCoreApiClient
+import com.example.agentsapp.data.remote.KnowledgeApiClient
+import com.example.agentsapp.data.remote.KnowledgeConnectionSettings
 import com.example.agentsapp.data.remote.McpApiClient
 import com.example.agentsapp.data.remote.McpConnectionSettings
 import com.example.agentsapp.data.remote.SchedulerApiClient
 import com.example.agentsapp.data.remote.SchedulerConnectionSettings
 import com.example.agentsapp.data.remote.ServerConnectionSettings
 import com.example.agentsapp.data.repository.AgentsCoreRepository
+import com.example.agentsapp.data.repository.KnowledgeRepository
 import com.example.agentsapp.data.repository.McpRepository
 import com.example.agentsapp.data.repository.RunsRepository
 import com.example.agentsapp.data.repository.SchedulerRepository
@@ -40,4 +43,10 @@ class AppContainer(context: Context) {
     val schedulerConnectionSettings = SchedulerConnectionSettings(context.applicationContext)
     val schedulerApiClient = SchedulerApiClient(baseUrlProvider = { schedulerConnectionSettings.currentBaseUrl() })
     val schedulerRepository = SchedulerRepository(schedulerApiClient)
+
+    /** Сервис баз знаний (knowledge_service) — четвёртый адрес: коллекции,
+     * загрузка документов, проверка поиска. RAG в ответах выполняет AgentsCore. */
+    val knowledgeConnectionSettings = KnowledgeConnectionSettings(context.applicationContext)
+    val knowledgeApiClient = KnowledgeApiClient(baseUrlProvider = { knowledgeConnectionSettings.currentBaseUrl() })
+    val knowledgeRepository = KnowledgeRepository(knowledgeApiClient, context.applicationContext)
 }

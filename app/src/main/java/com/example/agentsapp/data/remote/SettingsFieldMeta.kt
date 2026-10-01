@@ -19,6 +19,8 @@ enum class FieldType {
     NULLABLE_ENUM,
     STOP_SEQUENCES,
     TOOLS_JSON,
+    /** Множественный выбор баз знаний (коллекций сервиса баз знаний). */
+    COLLECTIONS,
 }
 
 data class SettingsFieldDef(
@@ -36,6 +38,8 @@ data class SettingsFieldDef(
     val visibleWhenContextStrategy: String? = null,
     /** Человекочитаемые подписи для значений [options] (по-русски) — если не задано, используется само значение. */
     val optionLabels: Map<String, String> = emptyMap(),
+    /** Поле показывается только при включённом «Использовать RAG» (параметры RAG). */
+    val visibleWhenRagEnabled: Boolean = false,
 )
 
 val THINKING_EFFORT_OPTIONS = listOf("low", "high", "max")
@@ -60,6 +64,7 @@ const val GROUP_CONNECTION = "Соединение с сервером"
 const val GROUP_MODEL = "Модель"
 const val GROUP_RESPONSE = "Параметры ответа"
 const val GROUP_TOOLS = "Инструменты"
+const val GROUP_KNOWLEDGE = "База знаний"
 const val GROUP_MEMORY = "Память"
 const val GROUP_TASKS = "Задачи"
 const val GROUP_SUMMARIZATION = "Суммаризация запросов"
@@ -97,6 +102,19 @@ val AGENT_SETTINGS_FIELDS: List<SettingsFieldDef> = listOf(
     SettingsFieldDef("stop_sequences", "Стоп-последовательности (через запятую)", GROUP_RESPONSE, FieldType.STOP_SEQUENCES),
     SettingsFieldDef("tool_choice", "Выбор функции", GROUP_TOOLS, FieldType.ENUM, options = TOOL_CHOICE_OPTIONS),
     SettingsFieldDef("tools_json", "Список функций в формате OpenAI", GROUP_TOOLS, FieldType.TOOLS_JSON),
+    // «Использовать RAG» и параметры поиска по базам знаний (knowledge_service).
+    SettingsFieldDef("rag_enabled", "Использовать RAG", GROUP_KNOWLEDGE, FieldType.BOOLEAN),
+    SettingsFieldDef("collection_ids", "Базы знаний", GROUP_KNOWLEDGE, FieldType.COLLECTIONS, visibleWhenRagEnabled = true),
+    SettingsFieldDef("rag_top_k", "Количество фрагментов", GROUP_KNOWLEDGE, FieldType.INT, visibleWhenRagEnabled = true),
+    SettingsFieldDef(
+        "rag_score_threshold", "Порог сходства", GROUP_KNOWLEDGE, FieldType.FLOAT_SLIDER,
+        sliderRange = 0f..1f, visibleWhenRagEnabled = true,
+    ),
+    SettingsFieldDef("rag_only_from_kb", "Отвечать только по базе знаний", GROUP_KNOWLEDGE, FieldType.BOOLEAN, visibleWhenRagEnabled = true),
+    SettingsFieldDef(
+        "rag_context_tokens", "Бюджет контекста для фрагментов (токены)", GROUP_KNOWLEDGE, FieldType.INT,
+        visibleWhenRagEnabled = true,
+    ),
     SettingsFieldDef(
         "memory_tools_enabled", "Разрешить агенту сохранять память", GROUP_MEMORY, FieldType.BOOLEAN,
     ),
@@ -149,7 +167,7 @@ val AGENT_SETTINGS_FIELDS: List<SettingsFieldDef> = listOf(
  * экране настроек по умолчанию (единственном экране уровня приложения, а не
  * сервера) и должен идти самым первым — раньше блока "Модель". */
 val SETTINGS_GROUP_ORDER = listOf(
-    GROUP_CONNECTION, GROUP_MODEL, GROUP_RESPONSE, GROUP_TOOLS, GROUP_MEMORY, GROUP_TASKS,
+    GROUP_CONNECTION, GROUP_MODEL, GROUP_RESPONSE, GROUP_TOOLS, GROUP_KNOWLEDGE, GROUP_MEMORY, GROUP_TASKS,
     GROUP_SUMMARIZATION, GROUP_CONTEXT_STRATEGY, GROUP_EXTRA,
 )
 
@@ -187,6 +205,12 @@ fun readSettingsField(settings: Settings, sysName: String): Any? = when (sysName
     "logprobs" -> settings.logprobs
     "frequency_penalty" -> settings.frequency_penalty
     "presence_penalty" -> settings.presence_penalty
+    "rag_enabled" -> settings.rag_enabled
+    "collection_ids" -> settings.collection_ids
+    "rag_top_k" -> settings.rag_top_k
+    "rag_score_threshold" -> settings.rag_score_threshold
+    "rag_only_from_kb" -> settings.rag_only_from_kb
+    "rag_context_tokens" -> settings.rag_context_tokens
     else -> null
 }
 

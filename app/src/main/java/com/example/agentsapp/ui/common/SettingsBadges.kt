@@ -54,7 +54,7 @@ private val BadgeShape = RoundedCornerShape(6.dp)
  * температура+top_p → seed → потоковые ответы → рассуждения → уровень
  * рассуждений → максимум токенов → JSON → стоп-последовательности →
  * автосуммаризация → стратегия контекста → память → задачи → инварианты →
- * инструменты → профиль.
+ * инструменты → RAG → профиль.
  *
  * Два режима:
  * - [baseline] == null (экран чата) — всё, что задано/включено в [settings];
@@ -177,6 +177,15 @@ fun settingsBadgeTexts(
         hasBaseline,
         { if (hasConfiguredTools(settings.tools_json)) "Инструменты" else null },
         "Инструменты (Выкл.)",
+    )?.let { add(it) }
+
+    // «Использовать RAG»: сравниваются и сам переключатель, и выбранные базы.
+    diffBadgeText(
+        settings.rag_enabled to settings.collection_ids.toSet(),
+        baseline?.let { it.rag_enabled to it.collection_ids.toSet() },
+        hasBaseline,
+        { (enabled, _) -> if (enabled) "RAG" else null },
+        "RAG (Выкл.)",
     )?.let { add(it) }
 
     if (profileName != null) add("Профиль: $profileName")

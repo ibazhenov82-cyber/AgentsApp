@@ -74,6 +74,14 @@ data class Settings(
     // "Инструменты MCP" активным, если "mcp" нет в списке (MCP выключен на
     // уровне сервиса AgentsCore целиком, не только этого чата).
     val tools_sources: List<String> = emptyList(),
+    /** «Использовать RAG» — поиск по базам знаний перед запросом к модели. */
+    val rag_enabled: Boolean = false,
+    /** Выбранные базы знаний (коллекции сервиса баз знаний). */
+    val collection_ids: List<String> = emptyList(),
+    val rag_top_k: Int = 5,
+    val rag_score_threshold: Double = 0.3,
+    val rag_only_from_kb: Boolean = true,
+    val rag_context_tokens: Int = 4000,
 )
 
 @Serializable
@@ -227,6 +235,42 @@ data class Message(
     val error: String? = null,
     /** Кто отправил сообщение пользователя: "app" | "scheduler". */
     val source: String = "app",
+    /** RAG-ответ: JSON с найденными фрагментами и ссылками ([RagInfo]); null — без RAG. */
+    val rag: String? = null,
+)
+
+/** Разобранное поле [Message.rag]: что найдено в базах знаний и передано модели. */
+@Serializable
+data class RagInfo(
+    val used: Boolean = true,
+    val query: String = "",
+    /** "ok" | "not_found" | "unavailable" */
+    val status: String = "ok",
+    val error: String? = null,
+    val only_from_kb: Boolean = true,
+    val sources: List<RagSource> = emptyList(),
+    /** Номера фрагментов, на которые сослался ответ. */
+    val cited: List<Int> = emptyList(),
+    /** false — в ответе нет ссылок на фрагменты («не подтверждён базой знаний»). */
+    val confirmed: Boolean = false,
+)
+
+@Serializable
+data class RagSource(
+    val n: Int,
+    val chunk_id: String? = null,
+    val score: Double? = null,
+    val text: String = "",
+    val section: String = "",
+    val page: Int? = null,
+    val document_id: String? = null,
+    val title: String = "",
+    val source: String? = null,
+    val source_type: String? = null,
+    val doc_date: String? = null,
+    val doc_version: String? = null,
+    val collection_id: String? = null,
+    val collection_name: String? = null,
 )
 
 @Serializable

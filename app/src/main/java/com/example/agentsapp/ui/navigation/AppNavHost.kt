@@ -42,6 +42,15 @@ import com.example.agentsapp.ui.chat.ChatViewModel
 import com.example.agentsapp.ui.InvariantsViewModelFactory
 import com.example.agentsapp.ui.invariants.InvariantsScreen
 import com.example.agentsapp.ui.invariants.InvariantsViewModel
+import com.example.agentsapp.ui.KnowledgeBaseViewModelFactory
+import com.example.agentsapp.ui.KnowledgeBasesViewModelFactory
+import com.example.agentsapp.ui.KnowledgeDocumentViewModelFactory
+import com.example.agentsapp.ui.knowledge.KnowledgeBaseScreen
+import com.example.agentsapp.ui.knowledge.KnowledgeBaseViewModel
+import com.example.agentsapp.ui.knowledge.KnowledgeBasesScreen
+import com.example.agentsapp.ui.knowledge.KnowledgeBasesViewModel
+import com.example.agentsapp.ui.knowledge.KnowledgeDocumentScreen
+import com.example.agentsapp.ui.knowledge.KnowledgeDocumentViewModel
 import com.example.agentsapp.ui.main.MainScreen
 import com.example.agentsapp.ui.main.MainViewModel
 import com.example.agentsapp.ui.mcp.GitHostsScreen
@@ -98,12 +107,19 @@ private object Routes {
     const val JOB_EDIT = "scheduler/jobs/{jobId}/edit"
     const val JOB_RUNS = "scheduler/jobs/{jobId}/runs?name={jobName}"
 
+    // Базы знаний (knowledge_service).
+    const val KNOWLEDGE = "knowledge"
+    const val KNOWLEDGE_COLLECTION = "knowledge/collections/{collectionId}"
+    const val KNOWLEDGE_DOCUMENT = "knowledge/documents/{documentId}"
+
     fun agentSettings(agentId: String) = "agentSettings/$agentId"
     fun chatSettings(chatId: String) = "chatSettings/$chatId"
     fun chat(chatId: String) = "chat/$chatId"
     fun memory(chatId: String) = "memory/$chatId"
     fun taskDetail(taskId: String) = "task/$taskId"
     fun jobEdit(jobId: String) = "scheduler/jobs/$jobId/edit"
+    fun knowledgeCollection(collectionId: String) = "knowledge/collections/$collectionId"
+    fun knowledgeDocument(documentId: String) = "knowledge/documents/$documentId"
     fun jobRuns(jobId: String, jobName: String) =
         "scheduler/jobs/$jobId/runs?name=${Uri.encode(jobName)}"
 }
@@ -148,7 +164,44 @@ fun AppNavHost(
                 onOpenTask = { taskId -> navController.navigate(Routes.taskDetail(taskId)) },
                 onOpenMcp = { navController.navigate(Routes.MCP) },
                 onOpenScheduler = { navController.navigate(Routes.SCHEDULER) },
+                onOpenKnowledge = { navController.navigate(Routes.KNOWLEDGE) },
             )
+        }
+
+        // ---- Базы знаний ----
+
+        composable(Routes.KNOWLEDGE) {
+            val factory = remember { KnowledgeBasesViewModelFactory(container.knowledgeRepository) }
+            val vm: KnowledgeBasesViewModel = viewModel(factory = factory)
+            KnowledgeBasesScreen(
+                viewModel = vm,
+                onBack = { navController.popBackStack() },
+                onOpenCollection = { id -> navController.navigate(Routes.knowledgeCollection(id)) },
+            )
+        }
+
+        composable(
+            route = Routes.KNOWLEDGE_COLLECTION,
+            arguments = listOf(navArgument("collectionId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val collectionId = backStackEntry.arguments?.getString("collectionId").orEmpty()
+            val factory = remember(collectionId) { KnowledgeBaseViewModelFactory(collectionId, container.knowledgeRepository) }
+            val vm: KnowledgeBaseViewModel = viewModel(key = "knowledge-$collectionId", factory = factory)
+            KnowledgeBaseScreen(
+                viewModel = vm,
+                onBack = { navController.popBackStack() },
+                onOpenDocument = { id -> navController.navigate(Routes.knowledgeDocument(id)) },
+            )
+        }
+
+        composable(
+            route = Routes.KNOWLEDGE_DOCUMENT,
+            arguments = listOf(navArgument("documentId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val documentId = backStackEntry.arguments?.getString("documentId").orEmpty()
+            val factory = remember(documentId) { KnowledgeDocumentViewModelFactory(documentId, container.knowledgeRepository) }
+            val vm: KnowledgeDocumentViewModel = viewModel(key = "knowledgeDoc-$documentId", factory = factory)
+            KnowledgeDocumentScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
 
         composable(Routes.MODELS) {
@@ -176,7 +229,7 @@ fun AppNavHost(
         }
 
         composable(Routes.DEFAULT_SETTINGS) {
-            val factory = remember { SettingsViewModelFactory(SettingsMode.Default, container.repository, container.connectionSettings, container.mcpConnectionSettings, container.schedulerConnectionSettings) }
+            val factory = remember { SettingsViewModelFactory(SettingsMode.Default, container.repository, container.connectionSettings, container.mcpConnectionSettings, container.schedulerConnectionSettings, container.knowledgeConnectionSettings, container.knowledgeRepository) }
             val vm: SettingsViewModel = viewModel(key = "defaultSettings", factory = factory)
             SettingsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
@@ -186,7 +239,7 @@ fun AppNavHost(
             arguments = listOf(navArgument("agentId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val agentId = backStackEntry.arguments?.getString("agentId").orEmpty()
-            val factory = remember(agentId) { SettingsViewModelFactory(SettingsMode.Agent(agentId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.schedulerConnectionSettings) }
+            val factory = remember(agentId) { SettingsViewModelFactory(SettingsMode.Agent(agentId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.schedulerConnectionSettings, container.knowledgeConnectionSettings, container.knowledgeRepository) }
             val vm: SettingsViewModel = viewModel(key = "agentSettings-$agentId", factory = factory)
             SettingsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
@@ -196,7 +249,7 @@ fun AppNavHost(
             arguments = listOf(navArgument("chatId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val chatId = backStackEntry.arguments?.getString("chatId").orEmpty()
-            val factory = remember(chatId) { SettingsViewModelFactory(SettingsMode.Chat(chatId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.schedulerConnectionSettings) }
+            val factory = remember(chatId) { SettingsViewModelFactory(SettingsMode.Chat(chatId), container.repository, container.connectionSettings, container.mcpConnectionSettings, container.schedulerConnectionSettings, container.knowledgeConnectionSettings, container.knowledgeRepository) }
             val vm: SettingsViewModel = viewModel(key = "chatSettings-$chatId", factory = factory)
             SettingsScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }

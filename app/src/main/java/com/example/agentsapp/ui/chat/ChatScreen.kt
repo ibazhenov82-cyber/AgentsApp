@@ -33,10 +33,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -588,6 +590,19 @@ private fun ChatOverflowMenu(
                 onClick = {
                     expanded = false
                     onOpenMemory()
+                },
+            )
+            // «Использовать RAG» — быстрый переключатель режима ответа (с базой
+            // знаний / без неё) для сравнения ответов на одни и те же вопросы.
+            DropdownMenuItem(
+                text = { Text("Использовать RAG") },
+                leadingIcon = { Icon(Icons.AutoMirrored.Filled.LibraryBooks, contentDescription = null) },
+                trailingIcon = {
+                    if (state.settings?.rag_enabled == true) Icon(Icons.Filled.Check, contentDescription = "Включено")
+                },
+                onClick = {
+                    expanded = false
+                    viewModel.toggleRag()
                 },
             )
             HorizontalDivider()
@@ -1142,6 +1157,9 @@ private fun MessageItem(
                             }
                         }
                     }
+                    // Источники из базы знаний (RAG): список формирует сервис по
+                    // фрагментам, переданным модели; нажатие — текст фрагмента.
+                    RagSourcesBlock(message)
                     // Токены НА ВЫХОД (completion_tokens) — сколько сгенерировал
                     // сам ответ, отдельно от токенов на вход, показанных под
                     // сообщением пользователя (см. ветку "user" выше).

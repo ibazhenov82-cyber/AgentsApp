@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonPrimitive
 
 /** Задержка перед отправкой нового названия чата на сервер после последнего
  * изменения пользователем (то же значение и тот же приём debounce, что и на
@@ -652,6 +653,25 @@ class ChatViewModel(
 
     fun toggleFactsPanel() {
         _state.update { it.copy(showFactsPanel = !it.showFactsPanel) }
+    }
+
+    /** «Использовать RAG» из меню чата — меняет настройку чата `rag_enabled`.
+     * Включить можно, только если в настройках чата уже выбраны базы знаний. */
+    fun toggleRag() {
+        val settings = _state.value.settings ?: return
+        val enable = !settings.rag_enabled
+        if (enable && settings.collection_ids.isEmpty()) {
+            _state.update { it.copy(errorMessage = "Выберите базы знаний в настройках чата (группа «База знаний»)") }
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val updated = repository.updateChatSettings(chatId, mapOf("rag_enabled" to JsonPrimitive(enable)))
+                _state.update { it.copy(settings = updated) }
+            } catch (e: Exception) {
+                _state.update { it.copy(errorMessage = errorText(e)) }
+            }
+        }
     }
 
     fun toggleMessageFactsExpanded(messageId: Long) {

@@ -6,6 +6,8 @@ import com.example.agentsapp.data.remote.AgentApiException
 import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.DefaultSettings
 import com.example.agentsapp.data.remote.Invariant
+import com.example.agentsapp.data.remote.KbCollection
+import com.example.agentsapp.data.remote.KnowledgeConnectionSettings
 import com.example.agentsapp.data.remote.McpConnectionSettings
 import com.example.agentsapp.data.remote.SchedulerConnectionSettings
 import com.example.agentsapp.data.remote.McpToolDescription
@@ -20,6 +22,8 @@ import com.example.agentsapp.data.remote.jsonValueOf
 import com.example.agentsapp.data.remote.readDefaultSettingsField
 import com.example.agentsapp.data.remote.readSettingsField
 import com.example.agentsapp.data.repository.AgentsCoreRepository
+import com.example.agentsapp.data.repository.KnowledgeRepository
+import com.example.agentsapp.ui.knowledge.knowledgeErrorText
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -89,6 +93,13 @@ data class SettingsUiState(
     /** Адрес сервиса планировщика — третье поле блока "Соединение с сервером"
      * (только в [SettingsMode.Default]), сохраняется в [SchedulerConnectionSettings]. */
     val schedulerConnectionUrl: String = "",
+    /** Адрес сервиса баз знаний — поле блока "Соединение с сервером" (только
+     * [SettingsMode.Default]), сохраняется в [KnowledgeConnectionSettings]. */
+    val knowledgeConnectionUrl: String = "",
+    /** Базы знаний для выбора в группе «База знаний» (Agent/Chat) — из сервиса баз знаний. */
+    val availableCollections: List<KbCollection> = emptyList(),
+    /** Ошибка загрузки списка баз знаний (сервис недоступен) — показывается у поля выбора. */
+    val collectionsError: String? = null,
     /** Режим "Выбрать из доступных" для поля "Список функций в формате OpenAI"
      * (tools_json) — показывается только в режимах [SettingsMode.Agent]/[SettingsMode.Chat],
      * рядом с полем GROUP_TOOLS. Переключение на ручной ввод JSON и обратно
@@ -108,6 +119,8 @@ class SettingsViewModel(
     private val connectionSettings: ServerConnectionSettings,
     private val mcpConnectionSettings: McpConnectionSettings,
     private val schedulerConnectionSettings: SchedulerConnectionSettings,
+    private val knowledgeConnectionSettings: KnowledgeConnectionSettings,
+    private val knowledgeRepository: KnowledgeRepository,
 ) : ViewModel() {
 
     private val toolsJson = Json { ignoreUnknownKeys = true; prettyPrint = true }
@@ -132,6 +145,7 @@ class SettingsViewModel(
             connectionUrl = if (mode is SettingsMode.Default) connectionSettings.currentBaseUrl() else "",
             mcpConnectionUrl = if (mode is SettingsMode.Default) mcpConnectionSettings.currentBaseUrl() else "",
             schedulerConnectionUrl = if (mode is SettingsMode.Default) schedulerConnectionSettings.currentBaseUrl() else "",
+            knowledgeConnectionUrl = if (mode is SettingsMode.Default) knowledgeConnectionSettings.currentBaseUrl() else "",
             showProfilePicker = mode is SettingsMode.Agent || mode is SettingsMode.Chat,
             showInvariantsPicker = mode is SettingsMode.Agent || mode is SettingsMode.Chat,
         )
@@ -144,7 +158,28 @@ class SettingsViewModel(
                 val tools = runCatching { repository.listMcpTools() }.getOrDefault(emptyList())
                 _state.value = _state.value.copy(availableMcpTools = tools)
             }
+            loadCollections()
         }
+    }
+
+    /** Базы знаний из сервиса баз знаний — для выбора в группе «База знаний». */
+    fun loadCollections() {
+        viewModelScope.launch {
+            try {
+                val collections = knowledgeRepository.listCollections()
+                _state.value = _state.value.copy(availableCollections = collections, collectionsError = null)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(collectionsError = knowledgeErrorText(e))
+            }
+        }
+    }
+
+    /** Выбор баз знаний — полная замена списка `collection_ids`. */
+    fun onCollectionToggle(collectionId: String) {
+        @Suppress("UNCHECKED_CAST")
+        val current = _state.value.values["collection_ids"] as? List<String> ?: emptyList()
+        val updated = if (collectionId in current) current - collectionId else current + collectionId
+        onImmediateChange("collection_ids", updated)
     }
 
     /** Небольшая замена data class с 4 полями, чтобы не заводить отдельный тип верхнего уровня. */
@@ -310,6 +345,16 @@ class SettingsViewModel(
         debounceJobs["__mcp_connection_url__"] = viewModelScope.launch {
             delay(DEBOUNCE_MS)
             mcpConnectionSettings.setBaseUrl(url)
+        }
+    }
+
+    /** Адрес сервиса баз знаний — тот же debounce-приём, сохраняется в [KnowledgeConnectionSettings]. */
+    fun onKnowledgeConnectionUrlChange(url: String) {
+        _state.value = _state.value.copy(knowledgeConnectionUrl = url)
+        debounceJobs["__knowledge_connection_url__"]?.cancel()
+        debounceJobs["__knowledge_connection_url__"] = viewModelScope.launch {
+            delay(DEBOUNCE_MS)
+            knowledgeConnectionSettings.setBaseUrl(url)
         }
     }
 

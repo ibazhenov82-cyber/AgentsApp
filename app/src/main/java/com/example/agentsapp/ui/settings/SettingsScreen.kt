@@ -198,6 +198,14 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        // Адрес сервиса баз знаний — экран «Базы знаний» и выбор баз в настройках RAG.
+                        OutlinedTextField(
+                            value = state.knowledgeConnectionUrl,
+                            onValueChange = viewModel::onKnowledgeConnectionUrlChange,
+                            label = { Text("Адрес сервиса баз знаний") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
                 item { HorizontalDivider() }
@@ -250,6 +258,8 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                         // как раньше, через generic FieldEditor.
                         if (row.def.sysName == "tools_json") {
                             ToolsJsonFieldEditor(def = row.def, state = state, viewModel = viewModel)
+                        } else if (row.def.type == FieldType.COLLECTIONS) {
+                            CollectionsPickerField(def = row.def, state = state, viewModel = viewModel)
                         } else {
                             FieldEditor(
                                 def = row.def,
@@ -410,6 +420,7 @@ private fun ToolsJsonFieldEditor(def: SettingsFieldDef, state: SettingsUiState, 
 private fun buildRows(fields: List<SettingsFieldDef>, values: Map<String, Any?>): List<SettingsRow> {
     val currentAutosummary = values["autosummary"] as? String
     val currentContextStrategy = values["context_strategy"] as? String
+    val ragEnabled = values["rag_enabled"] as? Boolean ?: false
     val byGroup = fields.groupBy { it.group }
     val rows = mutableListOf<SettingsRow>()
     for (group in SETTINGS_GROUP_ORDER) {
@@ -417,7 +428,8 @@ private fun buildRows(fields: List<SettingsFieldDef>, values: Map<String, Any?>)
         val visibleFields = groupFields.filter { field ->
             (field.visibleWhenAutosummary == null || field.visibleWhenAutosummary == currentAutosummary) &&
                 (!field.visibleWhenContextStrategySet || currentContextStrategy != null) &&
-                (field.visibleWhenContextStrategy == null || field.visibleWhenContextStrategy == currentContextStrategy)
+                (field.visibleWhenContextStrategy == null || field.visibleWhenContextStrategy == currentContextStrategy) &&
+                (!field.visibleWhenRagEnabled || ragEnabled)
         }
         if (visibleFields.isEmpty()) continue
         rows += SettingsRow.GroupHeader(group)
@@ -542,6 +554,9 @@ private fun FieldEditor(
                 placeholder = { Text("значение1, значение2, ...") },
             )
         }
+
+        // Рисуется отдельным редактором (CollectionsPickerField) — сюда не попадает.
+        FieldType.COLLECTIONS -> Unit
 
         FieldType.TOOLS_JSON -> OutlinedTextField(
             value = value as? String ?: "",
@@ -786,6 +801,62 @@ private fun InvariantsPickerField(state: SettingsUiState, onChanged: (List<Strin
                         trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "Убрать «${invariant.title}»", modifier = Modifier.size(16.dp)) },
                     )
                 }
+            }
+        }
+    }
+}
+
+/** Выбор баз знаний для RAG («Базы знаний», поле `collection_ids`) —
+ * отметки по списку баз из сервиса баз знаний. Базы, которых уже нет в
+ * сервисе, показываются по идентификатору, чтобы их можно было снять. */
+@Composable
+private fun CollectionsPickerField(def: SettingsFieldDef, state: SettingsUiState, viewModel: SettingsViewModel) {
+    @Suppress("UNCHECKED_CAST")
+    val selected = state.values[def.sysName] as? List<String> ?: emptyList()
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(def.title, style = MaterialTheme.typography.bodyMedium)
+        state.collectionsError?.let { error ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f))
+                TextButton(onClick = viewModel::loadCollections) { Text("Повторить") }
+            }
+        }
+        if (state.availableCollections.isEmpty() && state.collectionsError == null) {
+            Text(
+                "Баз знаний нет — создайте базу на экране «Базы знаний» (меню главного экрана).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        val known = state.availableCollections.map { it.id }.toSet()
+        state.availableCollections.forEach { collection ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { viewModel.onCollectionToggle(collection.id) },
+            ) {
+                androidx.compose.material3.Checkbox(
+                    checked = collection.id in selected,
+                    onCheckedChange = { viewModel.onCollectionToggle(collection.id) },
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(collection.name, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "документов: ${collection.stats.documents} · фрагментов: ${collection.stats.chunks}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        selected.filter { it !in known && state.collectionsError == null }.forEach { missing ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { viewModel.onCollectionToggle(missing) },
+            ) {
+                androidx.compose.material3.Checkbox(checked = true, onCheckedChange = { viewModel.onCollectionToggle(missing) })
+                Text("$missing (не найдена в сервисе)", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error)
             }
         }
     }

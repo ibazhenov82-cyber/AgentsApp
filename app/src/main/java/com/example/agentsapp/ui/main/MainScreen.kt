@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -87,7 +88,7 @@ import com.example.agentsapp.ui.common.settingsBadgeTexts
 
 /** Кебаб-меню главного экрана (по замечанию пользователя — вместо ряда
  * кнопок на тулбаре): Настройки → Модели → Профили → Инварианты → Модели
- * состояний задач → MCP-сервер → Планировщик. Иконки — те же, что были у кнопок. */
+ * состояний задач → MCP-сервер → Планировщик → Базы знаний. Иконки — те же, что были у кнопок. */
 @Composable
 private fun MainOverflowMenu(
     unreadFirst: Boolean,
@@ -99,6 +100,7 @@ private fun MainOverflowMenu(
     onOpenTaskMachines: () -> Unit,
     onOpenMcp: () -> Unit,
     onOpenScheduler: () -> Unit,
+    onOpenKnowledge: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -129,6 +131,9 @@ private fun MainOverflowMenu(
             }
             MainMenuItem("Планировщик", { Icon(Icons.Filled.Schedule, contentDescription = null) }) {
                 expanded = false; onOpenScheduler()
+            }
+            MainMenuItem("Базы знаний", { Icon(Icons.AutoMirrored.Filled.LibraryBooks, contentDescription = null) }) {
+                expanded = false; onOpenKnowledge()
             }
             HorizontalDivider()
             // Порядок чатов: по умолчанию прежний; «Непрочитанные выше» —
@@ -169,6 +174,7 @@ fun MainScreen(
     onOpenTask: (taskId: String) -> Unit,
     onOpenMcp: () -> Unit,
     onOpenScheduler: () -> Unit,
+    onOpenKnowledge: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -215,6 +221,7 @@ fun MainScreen(
                         onOpenTaskMachines = onOpenTaskMachines,
                         onOpenMcp = onOpenMcp,
                         onOpenScheduler = onOpenScheduler,
+                        onOpenKnowledge = onOpenKnowledge,
                     )
                 },
             )

@@ -4,12 +4,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.example.agentsapp.data.remote.ServerConnectionSettings
 import com.example.agentsapp.data.repository.AgentsCoreRepository
+import com.example.agentsapp.data.repository.KnowledgeRepository
 import com.example.agentsapp.data.repository.McpRepository
 import com.example.agentsapp.data.repository.RunsRepository
 import com.example.agentsapp.data.repository.SchedulerRepository
 import com.example.agentsapp.data.UiPreferences
 import com.example.agentsapp.ui.chat.ChatViewModel
 import com.example.agentsapp.ui.invariants.InvariantsViewModel
+import com.example.agentsapp.ui.knowledge.KnowledgeBaseViewModel
+import com.example.agentsapp.ui.knowledge.KnowledgeBasesViewModel
+import com.example.agentsapp.ui.knowledge.KnowledgeDocumentViewModel
 import com.example.agentsapp.ui.main.MainViewModel
 import com.example.agentsapp.ui.mcp.GitHostsViewModel
 import com.example.agentsapp.ui.mcp.McpViewModel
@@ -52,10 +56,38 @@ class SettingsViewModelFactory(
     private val connectionSettings: ServerConnectionSettings,
     private val mcpConnectionSettings: com.example.agentsapp.data.remote.McpConnectionSettings,
     private val schedulerConnectionSettings: com.example.agentsapp.data.remote.SchedulerConnectionSettings,
+    private val knowledgeConnectionSettings: com.example.agentsapp.data.remote.KnowledgeConnectionSettings,
+    private val knowledgeRepository: KnowledgeRepository,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        SettingsViewModel(mode, repository, connectionSettings, mcpConnectionSettings, schedulerConnectionSettings) as T
+        SettingsViewModel(
+            mode, repository, connectionSettings, mcpConnectionSettings, schedulerConnectionSettings,
+            knowledgeConnectionSettings, knowledgeRepository,
+        ) as T
+}
+
+class KnowledgeBasesViewModelFactory(
+    private val repository: KnowledgeRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T = KnowledgeBasesViewModel(repository) as T
+}
+
+class KnowledgeBaseViewModelFactory(
+    private val collectionId: String,
+    private val repository: KnowledgeRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T = KnowledgeBaseViewModel(collectionId, repository) as T
+}
+
+class KnowledgeDocumentViewModelFactory(
+    private val documentId: String,
+    private val repository: KnowledgeRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T = KnowledgeDocumentViewModel(documentId, repository) as T
 }
 
 class ChatViewModelFactory(
