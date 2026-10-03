@@ -7,6 +7,7 @@ import com.example.agentsapp.data.remote.AgentUnreachableException
 import com.example.agentsapp.data.remote.DefaultSettings
 import com.example.agentsapp.data.remote.Invariant
 import com.example.agentsapp.data.remote.KbCollection
+import com.example.agentsapp.data.remote.KbRerankModel
 import com.example.agentsapp.data.remote.KnowledgeConnectionSettings
 import com.example.agentsapp.data.remote.McpConnectionSettings
 import com.example.agentsapp.data.remote.SchedulerConnectionSettings
@@ -100,6 +101,12 @@ data class SettingsUiState(
     val availableCollections: List<KbCollection> = emptyList(),
     /** Ошибка загрузки списка баз знаний (сервис недоступен) — показывается у поля выбора. */
     val collectionsError: String? = null,
+    /** Модели-реранкеры knowledge_service; выбор показывается, только если их больше одной. */
+    val rerankModels: List<KbRerankModel> = emptyList(),
+    /** Модель-реранкер по умолчанию в knowledge_service (null — не настроена). */
+    val rerankDefault: String? = null,
+    /** false — список ещё не загружен или сервис недоступен (тогда предупреждение не показываем). */
+    val rerankModelsLoaded: Boolean = false,
     /** Режим "Выбрать из доступных" для поля "Список функций в формате OpenAI"
      * (tools_json) — показывается только в режимах [SettingsMode.Agent]/[SettingsMode.Chat],
      * рядом с полем GROUP_TOOLS. Переключение на ручной ввод JSON и обратно
@@ -172,6 +179,13 @@ class SettingsViewModel(
                 _state.value = _state.value.copy(collectionsError = knowledgeErrorText(e))
             }
         }
+        viewModelScope.launch {
+            runCatching { knowledgeRepository.rerankModels() }.onSuccess { list ->
+                _state.value = _state.value.copy(
+                    rerankModels = list.items, rerankDefault = list.default, rerankModelsLoaded = true,
+                )
+            }
+        }
     }
 
     /** Выбор баз знаний — полная замена списка `collection_ids`. */
@@ -220,13 +234,15 @@ class SettingsViewModel(
                     is SettingsMode.Chat -> {
                         val chat = repository.getChat(mode.chatId)
                         val settings = repository.getChatSettings(mode.chatId)
+                        // Модели нужны и в чате: подпись модели агента и выбор «Модели переписывания».
+                        val models = runCatching { repository.listModels() }.getOrDefault(emptyList())
                         val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
                         val invariants = runCatching { repository.listInvariants() }.getOrDefault(emptyList())
                         _state.value = _state.value.copy(
                             isLoading = false,
                             entityName = chat.title,
                             values = valuesFromSettings(settings),
-                            models = emptyList(),
+                            models = models,
                             availableProfiles = profiles,
                             selectedProfileId = chat.active_profile_id,
                             availableInvariants = invariants,

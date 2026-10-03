@@ -11,6 +11,8 @@ import com.example.agentsapp.data.repository.SchedulerRepository
 import com.example.agentsapp.data.UiPreferences
 import com.example.agentsapp.ui.chat.ChatViewModel
 import com.example.agentsapp.ui.invariants.InvariantsViewModel
+import com.example.agentsapp.ui.testdialogs.TestDialogEditViewModel
+import com.example.agentsapp.ui.testdialogs.TestDialogsViewModel
 import com.example.agentsapp.ui.knowledge.KnowledgeBaseViewModel
 import com.example.agentsapp.ui.knowledge.KnowledgeBasesViewModel
 import com.example.agentsapp.ui.knowledge.KnowledgeDocumentViewModel
@@ -124,6 +126,23 @@ class InvariantsViewModelFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
         InvariantsViewModel(repository) as T
+}
+
+class TestDialogsViewModelFactory(
+    private val repository: AgentsCoreRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        TestDialogsViewModel(repository) as T
+}
+
+class TestDialogEditViewModelFactory(
+    private val dialogId: String?,
+    private val repository: AgentsCoreRepository,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        TestDialogEditViewModel(dialogId, repository) as T
 }
 
 class TaskMachinesViewModelFactory(

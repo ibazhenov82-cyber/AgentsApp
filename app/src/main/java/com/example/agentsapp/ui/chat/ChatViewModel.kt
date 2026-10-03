@@ -12,6 +12,8 @@ import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.remote.TaskEvent
 import com.example.agentsapp.data.remote.TaskSummary
+import com.example.agentsapp.data.remote.TestDialog
+import com.example.agentsapp.data.remote.TestDialogProgress
 import com.example.agentsapp.data.remote.ToolCallEvent
 import com.example.agentsapp.data.repository.AgentsCoreRepository
 import com.example.agentsapp.data.repository.ChatRunState
@@ -150,6 +152,12 @@ data class ChatUiState(
      * "Пауза" для прерывания (по дополнению пользователя: прервать можно в
      * любой момент, пока "Выполнить" ещё работает). */
     val taskManagerAutoPause: Boolean = true,
+    /** Справочник тестовых диалогов — для выбора в меню ⋮ («Тестовый диалог…»). */
+    val testDialogs: List<TestDialog> = emptyList(),
+    val testDialogsLoading: Boolean = false,
+    /** Идёт тестовый диалог: название и номер текущего вопроса из скольких.
+     * Пока он идёт, отправка сообщений недоступна до последнего ответа. */
+    val testDialogProgress: TestDialogProgress? = null,
     /** Разовое сообщение об ошибке для показа в Snackbar; сбрасывается после показа. */
     val errorMessage: String? = null,
 ) {
@@ -229,6 +237,7 @@ class ChatViewModel(
                 streamingDraft = run?.toDraft(),
                 taskManagerActiveTaskId = if (isTaskRun) run?.taskId else null,
                 taskManagerAutoPause = run?.kind != "task_run",
+                testDialogProgress = if (run?.kind == "test_dialog") run.testDialog ?: TestDialogProgress() else null,
             )
         }
     }
@@ -493,6 +502,54 @@ class ChatViewModel(
                     )
                 }
                 refreshChatAndMessages()
+                val message = if (e is AgentApiException && e.statusCode == 409) {
+                    "В этом чате ещё формируется ответ — дождитесь его или остановите"
+                } else {
+                    errorText(e)
+                }
+                _state.update { it.copy(errorMessage = message) }
+            } finally {
+                _state.update { it.copy(isSending = false) }
+            }
+        }
+    }
+
+    // ---- Тестовые диалоги ------------------------------------------------------
+
+    /** Список тестовых диалогов для выбора (открытие диалога выбора в меню ⋮). */
+    fun loadTestDialogs() {
+        _state.update { it.copy(testDialogsLoading = true) }
+        viewModelScope.launch {
+            try {
+                val dialogs = repository.listTestDialogs()
+                _state.update { it.copy(testDialogs = dialogs, testDialogsLoading = false) }
+            } catch (e: Exception) {
+                _state.update { it.copy(testDialogsLoading = false, errorMessage = errorText(e)) }
+            }
+        }
+    }
+
+    /** Запуск выбранного тестового диалога: сервер отправляет вопросы по
+     * очереди (вопрос → ответ → следующий вопрос …) в фоне; ввод заблокирован
+     * до последнего ответа, «Остановить» прерывает цепочку. Флаги стратегии —
+     * как у обычной отправки. */
+    fun startTestDialog(dialogId: String) {
+        if (state.value.isBusy) return
+        val currentChat = chat
+        val strategy = currentChat?.settings?.context_strategy
+        val branch = state.value.selectedBranch.takeIf { it != 0 }
+        _state.update { it.copy(isSending = true, errorMessage = null) }
+        viewModelScope.launch {
+            try {
+                runsRepository.startTestDialogRun(
+                    chatId, dialogId,
+                    getFacts = strategy == "sticky_facts",
+                    slidingWindow = strategy == "sliding_window",
+                    autosummary = currentChat?.settings?.autosummary ?: "off",
+                    branch = branch,
+                )
+                refreshChatAndMessages()
+            } catch (e: Exception) {
                 val message = if (e is AgentApiException && e.statusCode == 409) {
                     "В этом чате ещё формируется ответ — дождитесь его или остановите"
                 } else {

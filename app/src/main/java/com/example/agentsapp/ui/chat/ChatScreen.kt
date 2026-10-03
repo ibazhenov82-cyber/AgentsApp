@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Quiz
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
@@ -117,6 +118,8 @@ import com.example.agentsapp.data.remote.ToolCallEvent
 import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.TaskEvent
 import com.example.agentsapp.data.remote.TaskSummary
+import com.example.agentsapp.data.remote.TestDialog
+import com.example.agentsapp.data.remote.TestDialogProgress
 import com.example.agentsapp.ui.common.SettingsSummary
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -161,6 +164,7 @@ fun ChatScreen(
 
     var showBranchPickerDialog by remember { mutableStateOf(false) }
     var showDeleteBranchConfirm by remember { mutableStateOf(false) }
+    var showTestDialogPicker by remember { mutableStateOf(false) }
 
     // Обновляем производные от настроек чата поля (стратегия контекста,
     // автосуммаризация, полный Settings для бейджей) при каждом входе на этот
@@ -288,6 +292,10 @@ fun ChatScreen(
                             onOpenMemory = onOpenMemory,
                             onShowBranchPicker = { showBranchPickerDialog = true },
                             onShowDeleteBranchConfirm = { showDeleteBranchConfirm = true },
+                            onShowTestDialogPicker = {
+                                viewModel.loadTestDialogs()
+                                showTestDialogPicker = true
+                            },
                         )
                     },
                 )
@@ -300,6 +308,9 @@ fun ChatScreen(
         },
         bottomBar = {
             Column {
+                // Идёт тестовый диалог — какой вопрос из скольких; отправка
+                // недоступна до последнего ответа («Остановить» прерывает цепочку).
+                state.testDialogProgress?.let { TestDialogProgressBar(it) }
                 ContextInfoBar(stats = state.stats)
                 MessageInputBar(
                     text = state.inputText,
@@ -427,6 +438,18 @@ fun ChatScreen(
                 showBranchPickerDialog = false
             },
             onDismiss = { showBranchPickerDialog = false },
+        )
+    }
+
+    if (showTestDialogPicker) {
+        TestDialogPickerDialog(
+            dialogs = state.testDialogs,
+            loading = state.testDialogsLoading,
+            onDismiss = { showTestDialogPicker = false },
+            onStart = { dialog ->
+                showTestDialogPicker = false
+                viewModel.startTestDialog(dialog.id)
+            },
         )
     }
 }
@@ -566,6 +589,7 @@ private fun ChatOverflowMenu(
     onOpenMemory: () -> Unit,
     onShowBranchPicker: () -> Unit,
     onShowDeleteBranchConfirm: () -> Unit,
+    onShowTestDialogPicker: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -603,6 +627,17 @@ private fun ChatOverflowMenu(
                 onClick = {
                     expanded = false
                     viewModel.toggleRag()
+                },
+            )
+            // Тестовый диалог — набор вопросов из справочника отправляется по
+            // очереди, каждый после ответа на предыдущий.
+            DropdownMenuItem(
+                text = { Text("Тестовый диалог…") },
+                leadingIcon = { Icon(Icons.Filled.Quiz, contentDescription = null) },
+                enabled = !state.isBusy,
+                onClick = {
+                    expanded = false
+                    onShowTestDialogPicker()
                 },
             )
             HorizontalDivider()
@@ -661,6 +696,103 @@ private fun ChatOverflowMenu(
                     },
                 )
             }
+        }
+    }
+}
+
+/** Выбор тестового диалога из справочника и запуск в этом чате. */
+@Composable
+private fun TestDialogPickerDialog(
+    dialogs: List<TestDialog>,
+    loading: Boolean,
+    onDismiss: () -> Unit,
+    onStart: (TestDialog) -> Unit,
+) {
+    var selected by remember { mutableStateOf<TestDialog?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Тестовый диалог") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                when {
+                    loading -> CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    dialogs.isEmpty() -> Text(
+                        "Тестовых диалогов нет. Создайте их на главном экране: меню ⋮ → «Тестовые диалоги».",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    else -> {
+                        Text(
+                            "Вопросы отправятся по очереди: следующий — после ответа на предыдущий. " +
+                                "До последнего ответа отправлять сообщения нельзя.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        dialogs.forEach { dialog ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().clickable { selected = dialog },
+                            ) {
+                                RadioButton(selected = selected?.id == dialog.id, onClick = { selected = dialog })
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(dialog.name, style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        questionsCountLabel(dialog.question_count),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { selected?.let(onStart) }, enabled = selected != null) { Text("Запустить") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+    )
+}
+
+/** «1 вопрос», «3 вопроса», «10 вопросов». */
+internal fun questionsCountLabel(count: Int): String {
+    val mod100 = count % 100
+    val mod10 = count % 10
+    val word = when {
+        mod100 in 11..14 -> "вопросов"
+        mod10 == 1 -> "вопрос"
+        mod10 in 2..4 -> "вопроса"
+        else -> "вопросов"
+    }
+    return "$count $word"
+}
+
+/** Полоса прогресса над полем ввода, пока идёт тестовый диалог. */
+@Composable
+private fun TestDialogProgressBar(progress: TestDialogProgress) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.tertiaryContainer)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        val name = progress.name.ifBlank { "Тестовый диалог" }
+        val stepText = if (progress.total > 0) "вопрос ${progress.step} из ${progress.total}" else "выполняется"
+        Text(
+            "Тестовый диалог «$name»: $stepText",
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (progress.total > 0) {
+            LinearProgressIndicator(
+                progress = { (progress.step - 1).coerceAtLeast(0).toFloat() / progress.total },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
@@ -1210,8 +1342,9 @@ private fun MessageBadges(message: Message, onToggleFacts: () -> Unit) {
         else -> null
     }
     val fromScheduler = message.role == "user" && message.source == "scheduler"
+    val fromTestDialog = message.role == "user" && message.source == "test_dialog"
     val hasBadges = message.is_task_manager_step || message.is_summary || message.branch > 0 ||
-        !message.facts.isNullOrBlank() || statusLabel != null || fromScheduler
+        !message.facts.isNullOrBlank() || statusLabel != null || fromScheduler || fromTestDialog
     if (!hasBadges) return
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 2.dp)) {
         if (statusLabel != null) {
@@ -1222,6 +1355,9 @@ private fun MessageBadges(message: Message, onToggleFacts: () -> Unit) {
         }
         if (fromScheduler) {
             SmallBadge(text = "По расписанию", color = MaterialTheme.colorScheme.tertiaryContainer)
+        }
+        if (fromTestDialog) {
+            SmallBadge(text = "Тестовый диалог", color = MaterialTheme.colorScheme.tertiaryContainer)
         }
         if (message.is_task_manager_step) {
             SmallBadge(text = "Менеджер задач", color = MaterialTheme.colorScheme.tertiaryContainer)

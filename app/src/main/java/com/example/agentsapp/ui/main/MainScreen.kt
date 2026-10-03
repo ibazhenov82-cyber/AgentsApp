@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Gavel
+import androidx.compose.material.icons.filled.Quiz
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Extension
@@ -97,6 +98,7 @@ private fun MainOverflowMenu(
     onOpenModels: () -> Unit,
     onOpenProfiles: () -> Unit,
     onOpenInvariants: () -> Unit,
+    onOpenTestDialogs: () -> Unit,
     onOpenTaskMachines: () -> Unit,
     onOpenMcp: () -> Unit,
     onOpenScheduler: () -> Unit,
@@ -122,6 +124,9 @@ private fun MainOverflowMenu(
             }
             MainMenuItem("Инварианты", { Icon(Icons.Filled.Gavel, contentDescription = null) }) {
                 expanded = false; onOpenInvariants()
+            }
+            MainMenuItem("Тестовые диалоги", { Icon(Icons.Filled.Quiz, contentDescription = null) }) {
+                expanded = false; onOpenTestDialogs()
             }
             MainMenuItem("Модели состояний задач", { Icon(Icons.Filled.Schema, contentDescription = null) }) {
                 expanded = false; onOpenTaskMachines()
@@ -170,6 +175,7 @@ fun MainScreen(
     onOpenDefaultSettings: () -> Unit,
     onOpenProfiles: () -> Unit,
     onOpenInvariants: () -> Unit,
+    onOpenTestDialogs: () -> Unit,
     onOpenTaskMachines: () -> Unit,
     onOpenTask: (taskId: String) -> Unit,
     onOpenMcp: () -> Unit,
@@ -218,6 +224,7 @@ fun MainScreen(
                         onOpenModels = onOpenModels,
                         onOpenProfiles = onOpenProfiles,
                         onOpenInvariants = onOpenInvariants,
+                        onOpenTestDialogs = onOpenTestDialogs,
                         onOpenTaskMachines = onOpenTaskMachines,
                         onOpenMcp = onOpenMcp,
                         onOpenScheduler = onOpenScheduler,

@@ -82,6 +82,17 @@ data class Settings(
     val rag_score_threshold: Double = 0.3,
     val rag_only_from_kb: Boolean = true,
     val rag_context_tokens: Int = 4000,
+    /** Топ-K векторного поиска до фильтрации и реранкинга. */
+    val rag_candidate_k: Int = 20,
+    /** «Реранкинг»: "none" | "heuristic" | "model". */
+    val rag_rerank: String = "none",
+    /** Модель-реранкер knowledge_service («провайдер/модель»); "" — по умолчанию сервиса. */
+    val rag_rerank_model: String = "",
+    val rag_rerank_threshold: Double = 0.3,
+    /** «Переписывание запроса»: "off" | "follow_up" | "llm". */
+    val rag_query_rewrite: String = "follow_up",
+    /** Модель переписывания запроса; "" — модель агента. */
+    val rag_rewrite_model: String = "",
 )
 
 @Serializable
@@ -253,13 +264,54 @@ data class RagInfo(
     val cited: List<Int> = emptyList(),
     /** false — в ответе нет ссылок на фрагменты («не подтверждён базой знаний»). */
     val confirmed: Boolean = false,
+    /** Исходный вопрос пользователя; [query] — запрос, по которому искали (после переписывания). */
+    val original_query: String = "",
+    val rewrite: RagRewrite? = null,
+    val stages: RagStages? = null,
+    val rerank: RagRerank? = null,
+    /** Выбранные в настройках базы знаний, которых нет в сервисе (удалены или пересозданы). */
+    val missing_collections: List<String> = emptyList(),
+)
+
+/** Переписывание запроса перед поиском. */
+@Serializable
+data class RagRewrite(
+    /** "off" | "follow_up" | "llm" */
+    val mode: String = "off",
+    val rewritten: Boolean = false,
+    val model: String? = null,
+    val error: String? = null,
+    val tokens: Int? = null,
+)
+
+/** Сколько фрагментов осталось после каждого этапа поиска. */
+@Serializable
+data class RagStages(
+    val candidates: Int = 0,
+    val after_threshold: Int = 0,
+    val after_dedup: Int = 0,
+    val after_rerank: Int = 0,
+    val returned: Int = 0,
+)
+
+/** Второй этап поиска: способ, модель, откат на эвристику. */
+@Serializable
+data class RagRerank(
+    /** "none" | "heuristic" | "model" */
+    val method: String = "none",
+    val model: String? = null,
+    val fallback: Boolean = false,
+    val error: String? = null,
 )
 
 @Serializable
 data class RagSource(
     val n: Int,
     val chunk_id: String? = null,
+    /** Итоговый балл: балл реранкинга, если он был, иначе векторное сходство. */
     val score: Double? = null,
+    val vector_score: Double? = null,
+    val rerank_score: Double? = null,
     val text: String = "",
     val section: String = "",
     val page: Int? = null,
@@ -417,6 +469,42 @@ data class Invariant(
     val is_active: Boolean = true,
     val created_at: Long,
     val updated_at: Long,
+)
+
+/** Тестовый диалог — общий справочник наборов вопросов; запускается в чате
+ * (`POST /chats/{id}/test-dialogs/{dialogId}/runs`). */
+@Serializable
+data class TestDialog(
+    val id: String,
+    val name: String,
+    val questions: List<String> = emptyList(),
+    val question_count: Int = 0,
+    val created_at: Long = 0,
+    val updated_at: Long = 0,
+)
+
+/** И создание (`POST /test-dialogs`), и сохранение (`PUT /test-dialogs/{id}`) — целиком. */
+@Serializable
+data class TestDialogCreateRequest(val name: String, val questions: List<String>)
+
+@Serializable
+data class TestDialogImportRequest(val text: String, val existing: List<String> = emptyList())
+
+@Serializable
+data class TestDialogImportDuplicate(
+    val line: Int,
+    val question: String,
+    /** "file" — повтор внутри файла; "existing" — уже есть в тестовом диалоге. */
+    val reason: String,
+    val duplicate_of: String = "",
+)
+
+@Serializable
+data class TestDialogImportResult(
+    val added: List<String> = emptyList(),
+    val duplicates: List<TestDialogImportDuplicate> = emptyList(),
+    val lines: Int = 0,
+    val skipped_too_long: List<Int> = emptyList(),
 )
 
 @Serializable

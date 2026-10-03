@@ -21,6 +21,10 @@ enum class FieldType {
     TOOLS_JSON,
     /** Множественный выбор баз знаний (коллекций сервиса баз знаний). */
     COLLECTIONS,
+    /** Модель-реранкер из списка knowledge_service ("" — по умолчанию сервиса). */
+    RERANK_MODEL_PICKER,
+    /** Модель переписывания запроса из моделей AgentsCore ("" — модель агента). */
+    REWRITE_MODEL_PICKER,
 }
 
 data class SettingsFieldDef(
@@ -40,12 +44,31 @@ data class SettingsFieldDef(
     val optionLabels: Map<String, String> = emptyMap(),
     /** Поле показывается только при включённом «Использовать RAG» (параметры RAG). */
     val visibleWhenRagEnabled: Boolean = false,
+    /** Поле показывается, только если значение каждого указанного поля входит в список
+     * (например, «Порог после реранкинга» — при `rag_rerank` = heuristic или model). */
+    val visibleWhen: Map<String, List<String>> = emptyMap(),
 )
 
 val THINKING_EFFORT_OPTIONS = listOf("low", "high", "max")
 val TOOL_CHOICE_OPTIONS = listOf("auto", "none", "required")
 val AUTOSUMMARY_OPTIONS = listOf("off", "messages", "tokens")
 val CONTEXT_STRATEGY_OPTIONS = listOf("sliding_window", "sticky_facts")
+val RAG_RERANK_OPTIONS = listOf("none", "heuristic", "model")
+val RAG_REWRITE_OPTIONS = listOf("off", "follow_up", "llm")
+
+/** Способы реранкинга — второй этап поиска в knowledge_service. */
+val RAG_RERANK_OPTION_LABELS = mapOf(
+    "none" to "Нет",
+    "heuristic" to "Эвристика (без LLM)",
+    "model" to "Модель-реранкер",
+)
+
+/** Переписывание запроса перед поиском (в AgentsCore). */
+val RAG_REWRITE_OPTION_LABELS = mapOf(
+    "off" to "Нет",
+    "follow_up" to "Дополнять уточняющие",
+    "llm" to "Моделью до поиска",
+)
 
 /** Русские подписи для выпадающего списка "Автоматическая суммаризация чата". */
 val AUTOSUMMARY_OPTION_LABELS = mapOf(
@@ -105,11 +128,32 @@ val AGENT_SETTINGS_FIELDS: List<SettingsFieldDef> = listOf(
     // «Использовать RAG» и параметры поиска по базам знаний (knowledge_service).
     SettingsFieldDef("rag_enabled", "Использовать RAG", GROUP_KNOWLEDGE, FieldType.BOOLEAN),
     SettingsFieldDef("collection_ids", "Базы знаний", GROUP_KNOWLEDGE, FieldType.COLLECTIONS, visibleWhenRagEnabled = true),
-    SettingsFieldDef("rag_top_k", "Количество фрагментов", GROUP_KNOWLEDGE, FieldType.INT, visibleWhenRagEnabled = true),
+    SettingsFieldDef(
+        "rag_query_rewrite", "Переписывание запроса", GROUP_KNOWLEDGE, FieldType.ENUM,
+        options = RAG_REWRITE_OPTIONS, optionLabels = RAG_REWRITE_OPTION_LABELS, visibleWhenRagEnabled = true,
+    ),
+    SettingsFieldDef(
+        "rag_rewrite_model", "Модель переписывания", GROUP_KNOWLEDGE, FieldType.REWRITE_MODEL_PICKER,
+        visibleWhenRagEnabled = true, visibleWhen = mapOf("rag_query_rewrite" to listOf("llm")),
+    ),
+    SettingsFieldDef("rag_candidate_k", "Кандидатов до фильтрации", GROUP_KNOWLEDGE, FieldType.INT, visibleWhenRagEnabled = true),
     SettingsFieldDef(
         "rag_score_threshold", "Порог сходства", GROUP_KNOWLEDGE, FieldType.FLOAT_SLIDER,
         sliderRange = 0f..1f, visibleWhenRagEnabled = true,
     ),
+    SettingsFieldDef(
+        "rag_rerank", "Реранкинг", GROUP_KNOWLEDGE, FieldType.ENUM,
+        options = RAG_RERANK_OPTIONS, optionLabels = RAG_RERANK_OPTION_LABELS, visibleWhenRagEnabled = true,
+    ),
+    SettingsFieldDef(
+        "rag_rerank_model", "Модель-реранкер", GROUP_KNOWLEDGE, FieldType.RERANK_MODEL_PICKER,
+        visibleWhenRagEnabled = true, visibleWhen = mapOf("rag_rerank" to listOf("model")),
+    ),
+    SettingsFieldDef(
+        "rag_rerank_threshold", "Порог после реранкинга", GROUP_KNOWLEDGE, FieldType.FLOAT_SLIDER,
+        sliderRange = 0f..1f, visibleWhenRagEnabled = true, visibleWhen = mapOf("rag_rerank" to listOf("heuristic", "model")),
+    ),
+    SettingsFieldDef("rag_top_k", "Фрагментов после фильтрации (топ-K)", GROUP_KNOWLEDGE, FieldType.INT, visibleWhenRagEnabled = true),
     SettingsFieldDef("rag_only_from_kb", "Отвечать только по базе знаний", GROUP_KNOWLEDGE, FieldType.BOOLEAN, visibleWhenRagEnabled = true),
     SettingsFieldDef(
         "rag_context_tokens", "Бюджет контекста для фрагментов (токены)", GROUP_KNOWLEDGE, FieldType.INT,
@@ -211,6 +255,12 @@ fun readSettingsField(settings: Settings, sysName: String): Any? = when (sysName
     "rag_score_threshold" -> settings.rag_score_threshold
     "rag_only_from_kb" -> settings.rag_only_from_kb
     "rag_context_tokens" -> settings.rag_context_tokens
+    "rag_candidate_k" -> settings.rag_candidate_k
+    "rag_rerank" -> settings.rag_rerank
+    "rag_rerank_model" -> settings.rag_rerank_model
+    "rag_rerank_threshold" -> settings.rag_rerank_threshold
+    "rag_query_rewrite" -> settings.rag_query_rewrite
+    "rag_rewrite_model" -> settings.rag_rewrite_model
     else -> null
 }
 

@@ -260,6 +260,22 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                             ToolsJsonFieldEditor(def = row.def, state = state, viewModel = viewModel)
                         } else if (row.def.type == FieldType.COLLECTIONS) {
                             CollectionsPickerField(def = row.def, state = state, viewModel = viewModel)
+                        } else if (row.def.type == FieldType.RERANK_MODEL_PICKER) {
+                            RerankModelPickerField(def = row.def, state = state, onSelected = { v ->
+                                viewModel.onImmediateChange(row.def.sysName, v)
+                            })
+                        } else if (row.def.type == FieldType.REWRITE_MODEL_PICKER) {
+                            val current = state.values[row.def.sysName] as? String ?: ""
+                            EnumDropdown(
+                                label = row.def.title,
+                                current = current,
+                                options = listOf("") + state.models.map { it.id },
+                                labelOf = { id ->
+                                    if (id.isEmpty()) "Модель агента"
+                                    else state.models.firstOrNull { it.id == id }?.let { modelLabel(it) } ?: id
+                                },
+                                onSelected = { v -> viewModel.onImmediateChange(row.def.sysName, v) },
+                            )
                         } else {
                             FieldEditor(
                                 def = row.def,
@@ -429,7 +445,8 @@ private fun buildRows(fields: List<SettingsFieldDef>, values: Map<String, Any?>)
             (field.visibleWhenAutosummary == null || field.visibleWhenAutosummary == currentAutosummary) &&
                 (!field.visibleWhenContextStrategySet || currentContextStrategy != null) &&
                 (field.visibleWhenContextStrategy == null || field.visibleWhenContextStrategy == currentContextStrategy) &&
-                (!field.visibleWhenRagEnabled || ragEnabled)
+                (!field.visibleWhenRagEnabled || ragEnabled) &&
+                field.visibleWhen.all { (name, allowed) -> values[name]?.toString() in allowed }
         }
         if (visibleFields.isEmpty()) continue
         rows += SettingsRow.GroupHeader(group)
@@ -555,8 +572,9 @@ private fun FieldEditor(
             )
         }
 
-        // Рисуется отдельным редактором (CollectionsPickerField) — сюда не попадает.
-        FieldType.COLLECTIONS -> Unit
+        // Рисуются отдельными редакторами (CollectionsPickerField, RerankModelPickerField,
+        // выбор модели переписывания) — сюда не попадают.
+        FieldType.COLLECTIONS, FieldType.RERANK_MODEL_PICKER, FieldType.REWRITE_MODEL_PICKER -> Unit
 
         FieldType.TOOLS_JSON -> OutlinedTextField(
             value = value as? String ?: "",
@@ -587,6 +605,48 @@ private fun FieldEditor(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+/** «Модель-реранкер»: список моделей задаётся в knowledge_service. Выбор
+ * показывается, только если моделей больше одной; при одной — подпись с её
+ * именем, без моделей — предупреждение, что будет применена эвристика. */
+@Composable
+private fun RerankModelPickerField(def: SettingsFieldDef, state: SettingsUiState, onSelected: (String) -> Unit) {
+    val models = state.rerankModels
+    when {
+        !state.rerankModelsLoaded -> Unit
+        models.isEmpty() -> Text(
+            "В сервисе баз знаний не настроена модель-реранкер (RERANK_PROVIDERS_FILE) — " +
+                "будет применена эвристика.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        models.size == 1 -> Text(
+            "${def.title}: ${models.first().model}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        else -> {
+            val defaultLabel = state.rerankDefault?.let { id ->
+                models.firstOrNull { it.id == id }?.model ?: id
+            }
+            EnumDropdown(
+                label = def.title,
+                current = state.values[def.sysName] as? String ?: "",
+                options = listOf("") + models.map { it.id },
+                labelOf = { id ->
+                    if (id.isEmpty()) {
+                        "По умолчанию сервиса" + (defaultLabel?.let { " ($it)" } ?: "")
+                    } else {
+                        models.firstOrNull { it.id == id }?.let { m ->
+                            m.model + (m.provider_title?.takeIf { it.isNotBlank() && it != m.model }?.let { " · $it" } ?: "")
+                        } ?: "$id (нет в сервисе)"
+                    }
+                },
+                onSelected = onSelected,
+            )
         }
     }
 }

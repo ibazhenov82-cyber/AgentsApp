@@ -20,6 +20,8 @@ import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.remote.TaskDetail
 import com.example.agentsapp.data.remote.TaskStateMachineInfo
 import com.example.agentsapp.data.remote.TaskSummary
+import com.example.agentsapp.data.remote.TestDialog
+import com.example.agentsapp.data.remote.TestDialogImportResult
 import com.example.agentsapp.data.remote.WorkingMemoryEntry
 import kotlinx.serialization.json.JsonElement
 
@@ -99,6 +101,18 @@ class AgentsCoreRepository(private val api: AgentsCoreApiClient) {
     suspend fun setAgentDefaultProfile(agentId: String, profileId: String?): Agent = api.setAgentDefaultProfile(agentId, profileId)
 
     suspend fun getMemorySnapshot(chatId: String): MemorySnapshot = api.getMemorySnapshot(chatId)
+
+    // ---- Тестовые диалоги (общий справочник) -----------------------------------
+
+    suspend fun listTestDialogs(): List<TestDialog> = api.listTestDialogs()
+    suspend fun getTestDialog(dialogId: String): TestDialog = api.getTestDialog(dialogId)
+    suspend fun createTestDialog(name: String, questions: List<String>): TestDialog =
+        api.createTestDialog(name, questions)
+    suspend fun updateTestDialog(dialogId: String, name: String, questions: List<String>): TestDialog =
+        api.updateTestDialog(dialogId, name, questions)
+    suspend fun deleteTestDialog(dialogId: String) = api.deleteTestDialog(dialogId)
+    suspend fun importTestDialogQuestions(text: String, existing: List<String>): TestDialogImportResult =
+        api.importTestDialogQuestions(text, existing)
 
     // ---- День 14. Инварианты (общий справочник, см. Invariant в AgentsCoreModels.kt) ---
 

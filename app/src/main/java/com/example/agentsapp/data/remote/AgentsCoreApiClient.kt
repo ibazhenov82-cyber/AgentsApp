@@ -247,6 +247,27 @@ class AgentsCoreApiClient(
     suspend fun setAgentDefaultProfile(agentId: String, profileId: String?): Agent =
         put("agents/$agentId/default-profile", ActiveProfileSetRequest(profileId), Agent.serializer())
 
+    // ---- Тестовые диалоги (общий справочник, см. TestDialog в AgentsCoreModels.kt) ---
+
+    suspend fun listTestDialogs(): List<TestDialog> = get("test-dialogs", ListSerializer(TestDialog.serializer()))
+
+    suspend fun getTestDialog(dialogId: String): TestDialog = get("test-dialogs/$dialogId", TestDialog.serializer())
+
+    suspend fun createTestDialog(name: String, questions: List<String>): TestDialog =
+        post("test-dialogs", TestDialogCreateRequest(name, questions), TestDialog.serializer())
+
+    suspend fun updateTestDialog(dialogId: String, name: String, questions: List<String>): TestDialog =
+        put("test-dialogs/$dialogId", TestDialogCreateRequest(name, questions), TestDialog.serializer())
+
+    suspend fun deleteTestDialog(dialogId: String) {
+        executeNoContent("test-dialogs/$dialogId", "DELETE")
+    }
+
+    /** Разбор текстового файла с вопросами (строка = вопрос) с проверкой
+     * дубликатов внутри файла и среди [existing]; ничего не сохраняет. */
+    suspend fun importTestDialogQuestions(text: String, existing: List<String>): TestDialogImportResult =
+        post("test-dialogs/import", TestDialogImportRequest(text, existing), TestDialogImportResult.serializer())
+
     // ---- День 14. Инварианты (общий справочник, см. Invariant в AgentsCoreModels.kt) ---
 
     suspend fun listInvariants(): List<Invariant> =
@@ -372,6 +393,21 @@ class AgentsCoreApiClient(
     suspend fun createTaskRun(chatId: String, taskId: String, autoPause: Boolean, clientRequestId: String? = null): RunCreated =
         post("chats/$chatId/tasks/$taskId/runs", TaskRunCreateRequest(autoPause, clientRequestId), RunCreated.serializer())
 
+    suspend fun createTestDialogRun(
+        chatId: String,
+        dialogId: String,
+        getFacts: Boolean = false,
+        slidingWindow: Boolean = false,
+        autosummary: String = "off",
+        branch: Int? = null,
+        clientRequestId: String? = null,
+    ): RunCreated =
+        post(
+            "chats/$chatId/test-dialogs/$dialogId/runs",
+            TestDialogRunRequest(getFacts, slidingWindow, autosummary, branch, clientRequestId),
+            RunCreated.serializer(),
+        )
+
     suspend fun getRun(runId: String): RunSnapshot = get("runs/$runId", RunSnapshot.serializer())
 
     suspend fun cancelRun(runId: String): Run = post("runs/$runId/cancel", null, Run.serializer())
@@ -453,6 +489,11 @@ class AgentsCoreApiClient(
         return runCatching { json.decodeFromJsonElement(Message.serializer(), element) }.getOrNull()
     }
 
+    private fun decodeTestDialog(element: JsonElement?): TestDialogProgress? {
+        if (element == null || element !is JsonObject) return null
+        return runCatching { json.decodeFromJsonElement(TestDialogProgress.serializer(), element) }.getOrNull()
+    }
+
     private fun parseRunEvent(obj: JsonObject): RunEvent? {
         val seq = obj.seq()
         return when (obj["type"].stringOrNull()) {
@@ -477,7 +518,10 @@ class AgentsCoreApiClient(
             "task_event" -> runCatching { json.decodeFromJsonElement(TaskEvent.serializer(), obj) }.getOrNull()
                 ?.let { RunEvent.Task(seq, it) }
             "message_saved" -> RunEvent.MessageSaved(seq, decodeMessage(obj["message"]))
-            "message_started" -> RunEvent.MessageStarted(seq, decodeMessage(obj["assistant_message"]))
+            "message_started" -> RunEvent.MessageStarted(
+                seq, decodeMessage(obj["assistant_message"]), decodeTestDialog(obj["test_dialog"]),
+            )
+            "test_dialog_step_done" -> RunEvent.TestDialogStepDone(seq, decodeTestDialog(obj["test_dialog"]))
             "task_step_done" -> RunEvent.TaskStepDone(
                 seq, taskStatus = obj["task_status"].stringOrNull(), shouldContinue = obj.bool("should_continue") ?: false,
             )
@@ -584,6 +628,9 @@ class AgentsCoreApiClient(
         is ChatRenameRequest -> ChatRenameRequest.serializer()
         is RunCreateRequest -> RunCreateRequest.serializer()
         is TaskRunCreateRequest -> TaskRunCreateRequest.serializer()
+        is TestDialogRunRequest -> TestDialogRunRequest.serializer()
+        is TestDialogCreateRequest -> TestDialogCreateRequest.serializer()
+        is TestDialogImportRequest -> TestDialogImportRequest.serializer()
         is ChatReadRequest -> ChatReadRequest.serializer()
         is BulkDeleteRequest -> BulkDeleteRequest.serializer()
         is BranchCreateRequest -> BranchCreateRequest.serializer()

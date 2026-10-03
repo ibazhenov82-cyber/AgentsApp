@@ -42,6 +42,12 @@ import com.example.agentsapp.ui.chat.ChatViewModel
 import com.example.agentsapp.ui.InvariantsViewModelFactory
 import com.example.agentsapp.ui.invariants.InvariantsScreen
 import com.example.agentsapp.ui.invariants.InvariantsViewModel
+import com.example.agentsapp.ui.TestDialogEditViewModelFactory
+import com.example.agentsapp.ui.TestDialogsViewModelFactory
+import com.example.agentsapp.ui.testdialogs.TestDialogEditScreen
+import com.example.agentsapp.ui.testdialogs.TestDialogEditViewModel
+import com.example.agentsapp.ui.testdialogs.TestDialogsScreen
+import com.example.agentsapp.ui.testdialogs.TestDialogsViewModel
 import com.example.agentsapp.ui.KnowledgeBaseViewModelFactory
 import com.example.agentsapp.ui.KnowledgeBasesViewModelFactory
 import com.example.agentsapp.ui.KnowledgeDocumentViewModelFactory
@@ -85,6 +91,9 @@ private object Routes {
     const val MODELS = "models"
     const val PROFILES = "profiles"
     const val INVARIANTS = "invariants"
+    const val TEST_DIALOGS = "testDialogs"
+    const val TEST_DIALOG_NEW = "testDialogs/new"
+    const val TEST_DIALOG_EDIT = "testDialogs/{dialogId}/edit"
     const val TASK_MACHINES = "taskMachines"
     const val DEFAULT_SETTINGS = "defaultSettings"
     const val AGENT_SETTINGS = "agentSettings/{agentId}"
@@ -115,6 +124,7 @@ private object Routes {
     fun agentSettings(agentId: String) = "agentSettings/$agentId"
     fun chatSettings(chatId: String) = "chatSettings/$chatId"
     fun chat(chatId: String) = "chat/$chatId"
+    fun testDialogEdit(dialogId: String) = "testDialogs/$dialogId/edit"
     fun memory(chatId: String) = "memory/$chatId"
     fun taskDetail(taskId: String) = "task/$taskId"
     fun jobEdit(jobId: String) = "scheduler/jobs/$jobId/edit"
@@ -160,6 +170,7 @@ fun AppNavHost(
                 onOpenDefaultSettings = { navController.navigate(Routes.DEFAULT_SETTINGS) },
                 onOpenProfiles = { navController.navigate(Routes.PROFILES) },
                 onOpenInvariants = { navController.navigate(Routes.INVARIANTS) },
+                onOpenTestDialogs = { navController.navigate(Routes.TEST_DIALOGS) },
                 onOpenTaskMachines = { navController.navigate(Routes.TASK_MACHINES) },
                 onOpenTask = { taskId -> navController.navigate(Routes.taskDetail(taskId)) },
                 onOpenMcp = { navController.navigate(Routes.MCP) },
@@ -220,6 +231,33 @@ fun AppNavHost(
             val factory = remember { InvariantsViewModelFactory(container.repository) }
             val vm: InvariantsViewModel = viewModel(factory = factory)
             InvariantsScreen(viewModel = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.TEST_DIALOGS) {
+            val factory = remember { TestDialogsViewModelFactory(container.repository) }
+            val vm: TestDialogsViewModel = viewModel(factory = factory)
+            TestDialogsScreen(
+                viewModel = vm,
+                onBack = { navController.popBackStack() },
+                onCreate = { navController.navigate(Routes.TEST_DIALOG_NEW) },
+                onEdit = { id -> navController.navigate(Routes.testDialogEdit(id)) },
+            )
+        }
+
+        composable(Routes.TEST_DIALOG_NEW) {
+            val factory = remember { TestDialogEditViewModelFactory(null, container.repository) }
+            val vm: TestDialogEditViewModel = viewModel(key = "testDialogNew", factory = factory)
+            TestDialogEditScreen(viewModel = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route = Routes.TEST_DIALOG_EDIT,
+            arguments = listOf(navArgument("dialogId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val dialogId = backStackEntry.arguments?.getString("dialogId").orEmpty()
+            val factory = remember(dialogId) { TestDialogEditViewModelFactory(dialogId, container.repository) }
+            val vm: TestDialogEditViewModel = viewModel(key = "testDialog-$dialogId", factory = factory)
+            TestDialogEditScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
 
         composable(Routes.TASK_MACHINES) {
