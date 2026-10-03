@@ -302,6 +302,8 @@ data class RagRerank(
     val model: String? = null,
     val fallback: Boolean = false,
     val error: String? = null,
+    /** Сколько занял второй этап, мс (модель-реранкер на CPU может работать секунды). */
+    val elapsed_ms: Long? = null,
 )
 
 @Serializable
