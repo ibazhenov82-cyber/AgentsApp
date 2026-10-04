@@ -93,6 +93,8 @@ data class Settings(
     val rag_query_rewrite: String = "follow_up",
     /** Модель переписывания запроса; "" — модель агента. */
     val rag_rewrite_model: String = "",
+    /** «Цитаты и источники обязательны» и «Не знаю» при слабом контексте. */
+    val rag_quotes: Boolean = true,
 )
 
 @Serializable
@@ -271,6 +273,31 @@ data class RagInfo(
     val rerank: RagRerank? = null,
     /** Выбранные в настройках базы знаний, которых нет в сервисе (удалены или пересозданы). */
     val missing_collections: List<String> = emptyList(),
+    /** «Цитаты и источники обязательны» — ответ с цитатами, проверенными кодом. */
+    val quotes_required: Boolean = false,
+    val quotes: List<RagQuote> = emptyList(),
+    /** Ответ начинается с «Не знаю» — слабый контекст, нужно уточнить вопрос. */
+    val dont_know: Boolean = false,
+    val checks: RagChecks? = null,
+)
+
+/** Цитата из ответа модели: [verified] — код нашёл её во фрагменте [n] дословно. */
+@Serializable
+data class RagQuote(
+    val n: Int,
+    val refs: List<Int> = emptyList(),
+    val text: String = "",
+    val verified: Boolean = false,
+)
+
+/** Проверки ответа для отметок под ним. */
+@Serializable
+data class RagChecks(
+    /** В ответе есть ссылки [n] на фрагменты. */
+    val sources: Boolean = false,
+    val quotes: Int = 0,
+    val quotes_verified: Int = 0,
+    val dont_know: Boolean = false,
 )
 
 /** Переписывание запроса перед поиском. */

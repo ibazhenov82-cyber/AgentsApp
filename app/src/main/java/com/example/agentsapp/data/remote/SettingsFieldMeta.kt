@@ -155,6 +155,7 @@ val AGENT_SETTINGS_FIELDS: List<SettingsFieldDef> = listOf(
     ),
     SettingsFieldDef("rag_top_k", "Фрагментов после фильтрации (топ-K)", GROUP_KNOWLEDGE, FieldType.INT, visibleWhenRagEnabled = true),
     SettingsFieldDef("rag_only_from_kb", "Отвечать только по базе знаний", GROUP_KNOWLEDGE, FieldType.BOOLEAN, visibleWhenRagEnabled = true),
+    SettingsFieldDef("rag_quotes", "Цитаты и источники обязательны", GROUP_KNOWLEDGE, FieldType.BOOLEAN, visibleWhenRagEnabled = true),
     SettingsFieldDef(
         "rag_context_tokens", "Бюджет контекста для фрагментов (токены)", GROUP_KNOWLEDGE, FieldType.INT,
         visibleWhenRagEnabled = true,
@@ -261,6 +262,7 @@ fun readSettingsField(settings: Settings, sysName: String): Any? = when (sysName
     "rag_rerank_threshold" -> settings.rag_rerank_threshold
     "rag_query_rewrite" -> settings.rag_query_rewrite
     "rag_rewrite_model" -> settings.rag_rewrite_model
+    "rag_quotes" -> settings.rag_quotes
     else -> null
 }
 
