@@ -117,6 +117,7 @@ import com.example.agentsapp.data.remote.ChatStats
 import com.example.agentsapp.data.remote.ToolCallEvent
 import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.TaskEvent
+import com.example.agentsapp.data.remote.TaskKinds
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.remote.TestDialog
 import com.example.agentsapp.data.remote.TestDialogProgress
@@ -208,7 +209,12 @@ fun ChatScreen(
     // последним сообщением, по одной на каждую открытую (активную/на паузе)
     // задачу чата (пункт 4 замечаний пользователя: обычно она одна, но
     // список чата может отслеживать несколько задач одновременно, пункт 7).
-    val taskCards = state.openTasks
+    // День 25: карточка-подтверждение — только у рабочих задач, когда задача
+    // на паузе («Останавливаться на каждом этапе») или для неё идёт запуск.
+    // Задача поиска продолжается сообщениями — карточки у неё нет.
+    val taskCards = state.openTasks.filter {
+        it.kind != TaskKinds.SEARCH && (it.paused || state.taskManagerActiveTaskId == it.id)
+    }
 
     // Автоскролл вниз (замечание 11, доработка "в самый низ при появлении
     // любой новой информации, включая системные сообщения"): единый расчёт
@@ -345,8 +351,9 @@ fun ChatScreen(
                 }
                 // Ссылка на текущую задачу(и) — отдельной строкой, НЕ бэдж
                 // (пункт 4 замечаний), сразу перед лентой сообщений.
-                if (state.openTasks.isNotEmpty()) {
+                if (state.openTasks.isNotEmpty() || state.currentTask != null) {
                     CurrentTaskLinkRow(
+                        currentTask = state.currentTask,
                         openTasks = state.openTasks,
                         taskManagerActiveTaskId = state.taskManagerActiveTaskId,
                         onOpenTask = onOpenTask,
@@ -869,41 +876,51 @@ private fun AgentModelBar(state: ChatUiState) {
  * этого чата (там уже понятно, к какой из них что относится). */
 @Composable
 private fun CurrentTaskLinkRow(
+    currentTask: TaskSummary?,
     openTasks: List<TaskSummary>,
     taskManagerActiveTaskId: String?,
     onOpenTask: (String) -> Unit,
     onOpenTaskList: () -> Unit,
     onPauseTask: (String) -> Unit,
 ) {
-    val singleTask = openTasks.singleOrNull()
+    // День 25: строка текущей задачи — «🔎 <цель> · Поиск ответа» или
+    // «🛠 <название> · Выполнение»; при нескольких открытых задачах рядом
+    // ссылка на список задач чата.
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (singleTask != null) {
-            val running = taskManagerActiveTaskId == singleTask.id
-            val label = if (running) {
-                "Задача: ${singleTask.title} — Менеджер задач выполняет задачу…"
-            } else {
-                "Задача: ${singleTask.title} — ${singleTask.status_display}"
+        if (currentTask != null) {
+            val running = taskManagerActiveTaskId == currentTask.id
+            val name = if (currentTask.kind == TaskKinds.SEARCH) currentTask.goal.ifBlank { currentTask.title } else currentTask.title
+            val stage = when {
+                running -> "Менеджер задач выполняет задачу…"
+                currentTask.paused -> "${currentTask.state_display_name} (на паузе)"
+                else -> currentTask.state_display_name
             }
             TextButton(
-                onClick = { onOpenTask(singleTask.id) },
+                onClick = { onOpenTask(currentTask.id) },
                 modifier = Modifier.weight(1f),
             ) {
-                Text(label, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Start)
+                Text(
+                    "${TaskKinds.icon(currentTask.kind)} $name · $stage",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Start,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
             if (running) {
-                IconButton(onClick = { onPauseTask(singleTask.id) }) {
+                IconButton(onClick = { onPauseTask(currentTask.id) }) {
                     Icon(Icons.Filled.Pause, contentDescription = "Поставить на паузу")
                 }
             }
-        } else {
-            TextButton(
-                onClick = onOpenTaskList,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Задачи (${openTasks.size})", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Start)
+        }
+        val others = openTasks.count { it.id != currentTask?.id }
+        if (currentTask == null || others > 0) {
+            TextButton(onClick = onOpenTaskList) {
+                Text("Задачи (${openTasks.size})", style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
@@ -1391,18 +1408,36 @@ private fun TaskEventChips(message: Message, onOpenTask: (String) -> Unit) {
         runCatching { taskEventsJson.decodeFromString(ListSerializer(TaskEvent.serializer()), raw) }.getOrDefault(emptyList())
     }
     if (events.isEmpty()) return
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 2.dp)) {
+    // Столбиком: тексты изменений памяти бывают длинными (День 25).
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.padding(bottom = 2.dp)) {
         events.forEach { event ->
-            val transition = if (event.from_state_display_name != null) {
-                "${event.from_state_display_name} → ${event.to_state_display_name}"
-            } else {
-                "начало → ${event.to_state_display_name}"
+            val icon = TaskKinds.icon(event.task_kind)
+            val text = when (event.kind) {
+                "memory" -> "🧠 Память задачи: " + event.changes.joinToString("; ") { it.label() }
+                "state" -> "$icon «${event.task_title}»: ${event.from_state_display_name} → ${event.to_state_display_name}" +
+                    (event.note?.let { " ($it)" } ?: "")
+                else -> {
+                    val transition = if (event.from_state_display_name != null) {
+                        "${event.from_state_display_name} → ${event.to_state_display_name}"
+                    } else {
+                        "${if (event.task_kind == TaskKinds.SEARCH) "новая задача поиска" else "новая задача"} → ${event.to_state_display_name}"
+                    }
+                    "$icon «${event.task_title}»: $transition"
+                }
             }
             SmallBadge(
-                text = "«${event.task_title}»: $transition",
-                color = MaterialTheme.colorScheme.secondaryContainer,
+                text = text,
+                color = if (event.kind == "memory") MaterialTheme.colorScheme.tertiaryContainer
+                else MaterialTheme.colorScheme.secondaryContainer,
                 onClick = { onOpenTask(event.task_id) },
             )
+            if (event.kind == "advance" && event.from_state_display_name == null && event.changes.isNotEmpty()) {
+                SmallBadge(
+                    text = "🧠 Память задачи: " + event.changes.joinToString("; ") { it.label() },
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    onClick = { onOpenTask(event.task_id) },
+                )
+            }
         }
     }
 }

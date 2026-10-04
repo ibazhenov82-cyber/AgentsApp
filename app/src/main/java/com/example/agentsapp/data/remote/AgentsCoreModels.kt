@@ -46,6 +46,9 @@ data class Settings(
     // вкладка "Задачи" на экране памяти) — это единственный флаг, которым
     // руководствуется UI, отдельного признака "видно/не видно" сервер не шлёт.
     val task_tracking_enabled: Boolean = false,
+    // «Останавливаться на каждом этапе» — пауза после создания задачи и
+    // каждого этапа (по умолчанию выключено для задач любого типа).
+    val task_pause_each_stage: Boolean = false,
     // "Менеджер задач" (обновление "Дня 13") — лимит автономных шагов подряд
     // без участия пользователя, считается на уровне чата в целом (см.
     // комментарий у одноимённого поля в agents_core/models.py). `0` — лимит
@@ -279,7 +282,19 @@ data class RagInfo(
     /** Ответ начинается с «Не знаю» — слабый контекст, нужно уточнить вопрос. */
     val dont_know: Boolean = false,
     val checks: RagChecks? = null,
+    /** «БЕЗ_ПОИСКА»: нового поиска не было — фрагменты предыдущего ответа
+     * (`message_id`), с теми же номерами [n]. Пусто — обычный поиск. */
+    val context_reused: RagContextReused? = null,
+    /** Сколько фрагментов добавлено из источников задачи поиска; fallback —
+     * поиск ничего не нашёл, ответ по накопленным источникам задачи. */
+    val task_sources_added: Int = 0,
+    val task_sources_fallback: Boolean = false,
+    /** «Источников нет» — ответ ни на один фрагмент не сослался. */
+    val no_sources: Boolean = false,
 )
+
+@Serializable
+data class RagContextReused(val message_id: Long? = null)
 
 /** Цитата из ответа модели: [verified] — код нашёл её во фрагменте [n] дословно. */
 @Serializable
@@ -309,6 +324,10 @@ data class RagRewrite(
     val model: String? = null,
     val error: String? = null,
     val tokens: Int? = null,
+    /** Модель переписывания ответила «БЕЗ_ПОИСКА» (просьба о предыдущем ответе). */
+    val no_search: Boolean = false,
+    /** В переписывании учтена память задачи (цель, термины, ограничения). */
+    val task_memory: Boolean = false,
 )
 
 /** Сколько фрагментов осталось после каждого этапа поиска. */
@@ -352,6 +371,8 @@ data class RagSource(
     val doc_version: String? = null,
     val collection_id: String? = null,
     val collection_name: String? = null,
+    /** Фрагмент из накопленных источников задачи поиска (не из нового поиска). */
+    val from_task: Boolean = false,
 )
 
 @Serializable
@@ -590,8 +611,40 @@ data class TaskStateInfo(
  * реально редактируется). */
 @Serializable
 data class TaskStateMachineInfo(
+    // «Рабочая задача» (planning → execution → validation → done).
     val states: List<TaskStateInfo> = emptyList(),
+    // «Задача поиска» (clarifying ⇄ answering ⇄ achieved).
+    val search_states: List<TaskStateInfo> = emptyList(),
     val invariants: List<Invariant> = emptyList(),
+)
+
+/** Типы задач: «Рабочая задача» и «Задача поиска» (День 25). */
+object TaskKinds {
+    const val WORK = "work"
+    const val SEARCH = "search"
+
+    fun icon(kind: String?): String = if (kind == SEARCH) "🔎" else "🛠"
+    fun label(kind: String?): String = if (kind == SEARCH) "Задача поиска" else "Рабочая задача"
+}
+
+/** Пункт памяти задачи — уточнение или ограничение пользователя. */
+@Serializable
+data class TaskMemoryItem(val text: String, val message_id: Long? = null)
+
+@Serializable
+data class TaskTerm(val term: String, val definition: String)
+
+/** Фрагмент базы знаний, на который уже опирались ответы задачи поиска. */
+@Serializable
+data class TaskSource(
+    val chunk_id: String? = null,
+    val title: String = "",
+    val section: String = "",
+    val text: String = "",
+    val source: String? = null,
+    val page: Int? = null,
+    val collection_name: String? = null,
+    val document_id: String? = null,
 )
 
 @Serializable
@@ -604,6 +657,9 @@ data class TaskSummary(
     val id: String,
     val chat_id: String,
     val title: String,
+    val kind: String = TaskKinds.WORK,
+    val kind_display_name: String = "Рабочая задача",
+    val goal: String = "",
     val state: String,
     val state_display_name: String,
     val paused: Boolean = false,
@@ -665,6 +721,15 @@ data class TaskDetail(
     val id: String,
     val chat_id: String,
     val title: String,
+    val kind: String = TaskKinds.WORK,
+    val kind_display_name: String = "Рабочая задача",
+    // Память задачи: цель, уточнения, ограничения, термины, источники.
+    val goal: String = "",
+    val clarifications: List<TaskMemoryItem> = emptyList(),
+    val constraints: List<TaskMemoryItem> = emptyList(),
+    val terms: List<TaskTerm> = emptyList(),
+    val sources: List<TaskSource> = emptyList(),
+    val description: String = "",
     val state: String,
     val state_display_name: String,
     val paused: Boolean = false,
@@ -703,8 +768,31 @@ data class TaskEvent(
     val task_title: String,
     val from_state_display_name: String? = null,
     val to_state_display_name: String,
+    // "advance" — этап сменила модель (или задача создана), "update" — без
+    // смены этапа, "state" — переход по итогам ответа (код), "memory" —
+    // изменилась память задачи (см. [changes]).
     val kind: String? = null,
+    val task_kind: String? = null,
+    val goal: String? = null,
+    val note: String? = null,
+    val changes: List<TaskMemoryChange> = emptyList(),
 )
+
+/** Изменение памяти задачи: op "+" (добавлено), "-" (удалено), "=" (цель
+ * изменена); field — "goal" | "clarification" | "constraint" | "term". */
+@Serializable
+data class TaskMemoryChange(val op: String, val field: String, val text: String) {
+    fun label(): String {
+        val what = when (field) {
+            "goal" -> "цель"
+            "clarification" -> "уточнение"
+            "constraint" -> "ограничение"
+            "term" -> "термин"
+            else -> field
+        }
+        return if (op == "=") "цель → «$text»" else "$op $what «$text»"
+    }
+}
 
 // ---- тела запросов ----------------------------------------------------------
 
@@ -715,3 +803,19 @@ data class TaskEvent(
  * (`POST /chats/{chat_id}/tasks/{task_id}/runs`). */
 @Serializable
 data class TaskManualActionRequest(val action: String, val note: String? = null)
+
+/** `PATCH /tasks/{id}/memory` — переданные списки заменяют текущие целиком,
+ * null — поле не меняется. */
+@Serializable
+data class TaskMemoryPatchRequest(
+    val title: String? = null,
+    val goal: String? = null,
+    val clarifications: List<String>? = null,
+    val constraints: List<String>? = null,
+    val terms: List<TaskTerm>? = null,
+    val clear_sources: Boolean = false,
+)
+
+/** `POST /tasks/{id}/state` — ручной переход (например «Цель достигнута»). */
+@Serializable
+data class TaskStateSetRequest(val state: String, val note: String? = null)

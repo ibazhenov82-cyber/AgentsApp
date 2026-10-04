@@ -11,6 +11,7 @@ import com.example.agentsapp.data.remote.Message
 import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.remote.TaskEvent
+import com.example.agentsapp.data.remote.TaskKinds
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.remote.TestDialog
 import com.example.agentsapp.data.remote.TestDialogProgress
@@ -139,6 +140,10 @@ data class ChatUiState(
      * строка). Пусто, если `task_tracking_enabled` выключена у чата — тогда
      * строка вообще не рисуется (см. ChatScreen). */
     val openTasks: List<TaskSummary> = emptyList(),
+    /** Текущая задача чата (День 25) — для строки задачи над перепиской:
+     * последняя незакрытая; задача поиска в «Цель достигнута», если она
+     * создана последней, тоже остаётся текущей (её можно продолжить). */
+    val currentTask: TaskSummary? = null,
     /** Id задачи, для которой сейчас выполняется шаг(и) "Менеджера задач"
      * (см. [ChatViewModel.startTaskManagerRun]) — не null, пока идёт вызов
      * модели; используется, чтобы показать индикатор в карточке
@@ -329,7 +334,7 @@ class ChatViewModel(
             null
         }
         val modelInfo = models.find { it.id == loadedChat.settings.model }
-        val openTasks = loadOpenTasksIfEnabled(loadedChat.settings)
+        val (openTasks, currentTask) = loadTasksIfEnabled(loadedChat.settings)
         _state.update {
             it.copy(
                 chatTitle = loadedChat.title,
@@ -350,6 +355,7 @@ class ChatViewModel(
                 branches = branches ?: it.branches,
                 latestFacts = latestFactsFrom(allMessages) ?: it.latestFacts,
                 openTasks = openTasks,
+                currentTask = currentTask,
                 firstUnreadMessageId = if (initialScrollDone) it.firstUnreadMessageId else loadedChat.first_unread_message_id,
                 scrollToMessageId = if (initialScrollDone) it.scrollToMessageId else loadedChat.first_unread_message_id,
             )
@@ -365,12 +371,14 @@ class ChatViewModel(
     /** Задачи этого чата подгружаются, только если у чата включена настройка
      * "Отслеживать задачи" — иначе задачи не существуют вовсе (пункт 4). Не
      * прерывает загрузку экрана, если запрос списка задач не удался. */
-    private suspend fun loadOpenTasksIfEnabled(settings: Settings): List<TaskSummary> =
-        if (settings.task_tracking_enabled) {
-            runCatching { repository.listChatTasks(chatId) }.getOrDefault(emptyList())
-        } else {
-            emptyList()
-        }
+    private suspend fun loadTasksIfEnabled(settings: Settings): Pair<List<TaskSummary>, TaskSummary?> {
+        if (!settings.task_tracking_enabled) return emptyList<TaskSummary>() to null
+        val all = runCatching { repository.listChatTasks(chatId, includeCompleted = true) }.getOrDefault(emptyList())
+        val open = all.filter { it.status != "done" }
+        val latest = all.lastOrNull()
+        val current = if (latest?.kind == TaskKinds.SEARCH) latest else open.lastOrNull()
+        return open to current
+    }
 
     /** Заново запрашивает чат (для актуальной статистики токенов, под текущую
      * выбранную ветку) и список сообщений — вызывается после любого
@@ -382,7 +390,7 @@ class ChatViewModel(
             chat = loadedChat
             val profiles = runCatching { repository.listProfiles() }.getOrDefault(emptyList())
             allMessages = repository.listMessages(chatId)
-            val openTasks = loadOpenTasksIfEnabled(loadedChat.settings)
+            val (openTasks, currentTask) = loadTasksIfEnabled(loadedChat.settings)
             _state.update {
                 it.copy(
                     contextStrategy = loadedChat.settings.context_strategy,
@@ -398,6 +406,7 @@ class ChatViewModel(
                     messages = visibleMessages(allMessages, it.selectedBranch),
                     latestFacts = latestFactsFrom(allMessages) ?: it.latestFacts,
                     openTasks = openTasks,
+                    currentTask = currentTask,
                 )
             }
             scheduleMarkRead()

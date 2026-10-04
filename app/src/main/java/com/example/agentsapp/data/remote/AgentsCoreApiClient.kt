@@ -339,6 +339,14 @@ class AgentsCoreApiClient(
     suspend fun applyTaskActionManually(taskId: String, action: String, note: String? = null): TaskDetail =
         post("tasks/$taskId/actions", TaskManualActionRequest(action, note), TaskDetail.serializer())
 
+    /** Ручная правка памяти задачи (`PATCH /tasks/{id}/memory`). */
+    suspend fun patchTaskMemory(taskId: String, patch: TaskMemoryPatchRequest): TaskDetail =
+        patch("tasks/$taskId/memory", patch, TaskDetail.serializer())
+
+    /** Ручной переход состояния (`POST /tasks/{id}/state`), например «Цель достигнута». */
+    suspend fun setTaskState(taskId: String, state: String, note: String? = null): TaskDetail =
+        post("tasks/$taskId/state", TaskStateSetRequest(state, note), TaskDetail.serializer())
+
     suspend fun deleteTask(taskId: String) {
         executeNoContent("tasks/$taskId", "DELETE")
     }
@@ -642,6 +650,8 @@ class AgentsCoreApiClient(
         is InvariantIdsSetRequest -> InvariantIdsSetRequest.serializer()
         is TaskMachineInvariantIdsSetRequest -> TaskMachineInvariantIdsSetRequest.serializer()
         is TaskManualActionRequest -> TaskManualActionRequest.serializer()
+        is TaskMemoryPatchRequest -> TaskMemoryPatchRequest.serializer()
+        is TaskStateSetRequest -> TaskStateSetRequest.serializer()
         else -> error("no serializer registered for ${body::class}")
     } as KSerializer<Any>
 

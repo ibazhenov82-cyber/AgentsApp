@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import com.example.agentsapp.data.remote.TaskKinds
 import com.example.agentsapp.data.remote.LongTermMemoryEntry
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.remote.WorkingMemoryEntry
@@ -269,9 +270,9 @@ private fun TaskCard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f).clickable(onClick = onOpenTask)) {
-                Text(task.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("${TaskKinds.icon(task.kind)} ${task.title}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Text(
-                    "${task.status_display} · ${task.state_display_name}",
+                    "${task.kind_display_name} · ${task.status_display} · ${task.state_display_name}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -283,7 +284,7 @@ private fun TaskCard(
                     )
                 }
             }
-            if (task.status != "done") {
+            if (task.status != "done" && task.kind != TaskKinds.SEARCH) {
                 if (isRunning) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp).padding(end = 4.dp))
                     IconButton(onClick = onPauseTask) {

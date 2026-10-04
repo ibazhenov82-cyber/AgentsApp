@@ -181,6 +181,7 @@ val AGENT_SETTINGS_FIELDS: List<SettingsFieldDef> = listOf(
     // памяти) — см. места использования `settings.task_tracking_enabled` в
     // MainScreen.kt/ChatScreen.kt/MemoryScreen.kt.
     SettingsFieldDef("task_tracking_enabled", "Отслеживать задачи", GROUP_TASKS, FieldType.BOOLEAN),
+    SettingsFieldDef("task_pause_each_stage", "Останавливаться на каждом этапе", GROUP_TASKS, FieldType.BOOLEAN),
     // "Менеджер задач" (обновление "Дня 13") — лимит автономных шагов подряд
     // без участия пользователя (защита от зацикливания/расхода токенов),
     // считается на уровне чата в целом; 0 — лимит отключён.
@@ -237,6 +238,7 @@ fun readSettingsField(settings: Settings, sysName: String): Any? = when (sysName
     "semantic_memory_enabled" -> settings.semantic_memory_enabled
     "procedural_memory_enabled" -> settings.procedural_memory_enabled
     "task_tracking_enabled" -> settings.task_tracking_enabled
+    "task_pause_each_stage" -> settings.task_pause_each_stage
     "task_manager_max_steps" -> settings.task_manager_max_steps
     "summary_prompt" -> settings.summary_prompt
     "summary_system_prompt" -> settings.summary_system_prompt

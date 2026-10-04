@@ -18,6 +18,7 @@ import com.example.agentsapp.data.remote.Profile
 import com.example.agentsapp.data.remote.RegisteredSkill
 import com.example.agentsapp.data.remote.Settings
 import com.example.agentsapp.data.remote.TaskDetail
+import com.example.agentsapp.data.remote.TaskMemoryPatchRequest
 import com.example.agentsapp.data.remote.TaskStateMachineInfo
 import com.example.agentsapp.data.remote.TaskSummary
 import com.example.agentsapp.data.remote.TestDialog
@@ -143,5 +144,9 @@ class AgentsCoreRepository(private val api: AgentsCoreApiClient) {
     suspend fun applyTaskActionManually(taskId: String, action: String, note: String? = null): TaskDetail =
         api.applyTaskActionManually(taskId, action, note)
     suspend fun deleteTask(taskId: String) = api.deleteTask(taskId)
+    suspend fun patchTaskMemory(taskId: String, patch: TaskMemoryPatchRequest): TaskDetail =
+        api.patchTaskMemory(taskId, patch)
+    suspend fun setTaskState(taskId: String, state: String, note: String? = null): TaskDetail =
+        api.setTaskState(taskId, state, note)
 
 }

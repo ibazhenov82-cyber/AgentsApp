@@ -75,6 +75,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.example.agentsapp.R
+import com.example.agentsapp.data.remote.TaskKinds
 import com.example.agentsapp.data.remote.Agent
 import com.example.agentsapp.data.remote.AgentWithChats
 import com.example.agentsapp.data.remote.Chat
@@ -646,7 +647,7 @@ private fun TaskSummaryRow(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenTask).padding(vertical = 4.dp),
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = task.title, style = MaterialTheme.typography.bodyMedium)
+            Text(text = "${TaskKinds.icon(task.kind)} ${task.title}", style = MaterialTheme.typography.bodyMedium)
             val subtitle = buildString {
                 append(task.status_display)
                 append(" · ")
@@ -662,7 +663,8 @@ private fun TaskSummaryRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (task.status != "done") {
+        // Задача поиска продолжается вопросами в чате — кнопок Менеджера задач у неё нет.
+        if (task.status != "done" && task.kind != TaskKinds.SEARCH) {
             if (isRunning) {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp).padding(end = 4.dp))
                 IconButton(onClick = onPauseTask) {
